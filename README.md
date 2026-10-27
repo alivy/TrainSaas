@@ -43,7 +43,7 @@ dotnet run --project backend/src/TrainSaas.Api
 2. 应用 EF Core 迁移；
 3. `SeedDemoData=true` 时写入演示数据（Development 默认开启；幂等，重复启动不会产生重复行）。
 
-API 文档：Development 环境提供 OpenAPI 文档 `http://localhost:5080/openapi/v1.json`，可直接导入 Swagger UI / Postman / Apifox 调试（后端未内置 Swagger UI 页面）。
+API 文档：Swagger UI `http://localhost:5080/swagger`（OpenAPI JSON 文档由内置 `MapOpenApi()` 产出，地址 `http://localhost:5080/openapi/v1.json`，Development 环境提供，也可导入 Postman / Apifox 调试）。
 
 ## 测试
 

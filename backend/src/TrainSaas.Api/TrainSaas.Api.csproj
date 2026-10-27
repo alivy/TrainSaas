@@ -14,6 +14,9 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <!-- R16a: Swagger UI middleware only (no Swashbuckle doc generator) — the
+         UI is pointed at the built-in MapOpenApi() document /openapi/v1.json. -->
+    <PackageReference Include="Swashbuckle.AspNetCore.SwaggerUI" Version="10.3.1" />
   </ItemGroup>
 
 </Project>
