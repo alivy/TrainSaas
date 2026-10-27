@@ -33,10 +33,15 @@ namespace TrainSaas.Api.Services;
 /// <item>无/Leave/Absent → Leave/Absent：只 upsert 点名行，不扣课。</item>
 /// </list>
 ///
-/// Attendance 按 (ClassSessionId, StudentId) upsert，唯一索引是数据库兜底：
-/// 并发插入冲突（DbUpdateException）清跟踪器后重读，按 upsert 语义改插为
-/// 改（对方若刚标为 Present 且本次要改成 Leave/Absent，先走冲正使账务
-/// 自洽），不产生 500。任一点名行存在后课次幂等转 Completed。
+/// Attendance 按 (ClassSessionId, StudentId) upsert，唯一索引是数据库兜底。
+/// R12 对称收敛（账务心脏，两条分支行为完全一致）：竞入的 Present 行无论
+/// 经由读-改-写分支（赢家先提交，静默无异常）还是唯一索引冲突分支
+/// （DbUpdateException 后清跟踪器重读、改插为改，不 500）被发现——本次目标
+/// Leave/Absent 则先冲正（ReverseLatestAsync 语义）再覆写标记；本次目标
+/// Present 且本次刚扣过课则本次调用是双 Present 竞态输家，按 Id 自冲正
+/// 自己刚插入的 +1（确定性、append-only、恰一个竞态者自冲正）并回补包 +1，
+/// 收敛结果 Ok=true。所有 +1 回补走 CAS 式 ExecuteUpdate 且与冲正行同一
+/// 显式事务提交（R12 点 3）。任一点名行存在后课次幂等转 Completed。
 /// </summary>
 public class AttendanceService(AppDbContext db, IDeductionService deduction)
 {
@@ -119,9 +124,12 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
             }
 
             // 无/Leave/Absent→Present：先扣课；失败则该生失败且不写点名行。
+            // 扣课行必须捕获（R12 点 2）：upsert 若发现竞入的 Present 行，
+            // 本次调用即双 Present 竞态输家，需按 Id 自冲正这条流水。
+            Consumption deducted;
             try
             {
-                await deduction.DeductAsync(
+                deducted = await deduction.DeductAsync(
                     item.StudentId, productId, session.Id, ConsumptionKind.RollCall, operatorId);
             }
             catch (NoAvailablePackException)
@@ -129,7 +137,7 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
                 return new MarkResult(item.StudentId, false, "无可用课时包");
             }
 
-            await UpsertMarkAsync(session, item, operatorId);
+            await UpsertMarkAsync(session, item, operatorId, deducted);
             return new MarkResult(item.StudentId, true, null);
         }
 
@@ -139,7 +147,7 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
             await ReverseLatestAsync(session, item.StudentId, operatorId);
         }
 
-        await UpsertMarkAsync(session, item, operatorId);
+        await UpsertMarkAsync(session, item, operatorId, deducted: null);
         return new MarkResult(item.StudentId, true, null);
     }
 
@@ -169,13 +177,25 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
     /// 点名行 upsert：有则改（标记 + 操作人），无则插；并发赢家抢先插入时
     /// 唯一索引 (ClassSessionId,StudentId) 把 DbUpdateException 兜成
     /// "重读后改插为改"（收敛，不 500）。
+    ///
+    /// R12 对称收敛（两条分支行为完全一致）：无论竞入的 Present 行经由
+    /// 读-改-写分支（赢家先提交，静默无异常）还是唯一索引冲突分支（插入
+    /// 撞车）被发现，写入标记前都先走 <see cref="ConvergeRacedPresentAsync"/>
+    /// 的同一套账务调和——绝不允许"行收敛了、账没收敛"的静默漏账。
     /// </summary>
-    private async Task UpsertMarkAsync(ClassSession session, MarkItem item, int operatorId)
+    /// <param name="deducted">
+    /// 本次调用刚插入的 +1 扣课行（仅目标 Present 且扣课成功时非 null）；
+    /// 竞态输家自冲正按此 Id 确定性定位，无需 LIFO 查找。
+    /// </param>
+    private async Task UpsertMarkAsync(
+        ClassSession session, MarkItem item, int operatorId, Consumption? deducted)
     {
         var row = await db.Attendances
             .SingleOrDefaultAsync(a => a.ClassSessionId == session.Id && a.StudentId == item.StudentId);
         if (row is not null)
         {
+            // 读-改-写分支：行可能是并发赢家在本调用 prev 读取之后竞入的。
+            await ConvergeRacedPresentAsync(session, item, operatorId, deducted, row.Mark);
             row.Mark = item.Mark;
             row.OperatorId = operatorId;
             await db.SaveChangesAsync();
@@ -208,13 +228,8 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
                 throw;
             }
 
-            // 对手刚把该生标为 Present（已扣课）而本次要改成 Leave/Absent：
-            // 按矩阵先冲正再改标记，账务保持自洽。
-            if (raced.Mark == AttendanceMark.Present && item.Mark != AttendanceMark.Present)
-            {
-                await ReverseLatestAsync(session, item.StudentId, operatorId);
-            }
-
+            // 冲突分支：与读-改-写分支走同一套调和（对称，R12 点 1/2）。
+            await ConvergeRacedPresentAsync(session, item, operatorId, deducted, raced.Mark);
             raced.Mark = item.Mark;
             raced.OperatorId = operatorId;
             await db.SaveChangesAsync();
@@ -222,11 +237,50 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
     }
 
     /// <summary>
+    /// 竞入 Present 行的账务调和（R12 裁定；upsert 两条分支共用，行为一致）。
+    /// 既有行已为 Present 时：
+    /// <list type="bullet">
+    /// <item>本次目标 Present 且本次刚扣过课（deducted 非 null；Present→Present
+    /// 在状态机中提前返回、绝不走到 upsert，故此形态唯一）：本次调用是双
+    /// Present 竞态输家 → <see cref="SelfReverseAsync"/> 按 Id 自冲正自己的
+    /// 扣课行并回补包 +1。确定性（自己的行 Id，无 LIFO 查找）、append-only、
+    /// 恰一个竞态者自冲正；收敛结果 Ok=true（行已 Present，终态正确）。</item>
+    /// <item>本次目标 Leave/Absent：与状态迁移矩阵一致，先
+    /// <see cref="ReverseLatestAsync"/> 冲正最新未冲正的 +1（竞入赢家的扣课）
+    /// 再覆写标记——绝不盲写导致赢家的扣课悬挂在 Leave/Absent 行上。
+    /// ReverseLatestAsync 幂等（无未冲正流水即无操作），常规
+    /// Present→Leave/Absent 路径在状态机中已冲正过时此处自然不再重复。</item>
+    /// </list>
+    /// 行非 Present（或目标 Present 且本次未扣课）：无账务可调，直接返回。
+    /// </summary>
+    private async Task ConvergeRacedPresentAsync(
+        ClassSession session, MarkItem item, int operatorId, Consumption? deducted,
+        AttendanceMark racedMark)
+    {
+        if (racedMark != AttendanceMark.Present)
+        {
+            return;
+        }
+
+        if (item.Mark == AttendanceMark.Present)
+        {
+            if (deducted is not null)
+            {
+                await SelfReverseAsync(deducted, operatorId);
+            }
+            return;
+        }
+
+        await ReverseLatestAsync(session, item.StudentId, operatorId);
+    }
+
+    /// <summary>
     /// Present→Leave/Absent 的冲正：找该 (student, session) 最新一条未被冲正
     /// 的 +1 流水（RollCall；WalkIn 无课次关联，天然不在候选内；已冲正的
-    /// 原行被 NOT EXISTS 排除），追加 Direction=-1 冲正行并回补包余量 +1
-    /// （跟踪直改——+1 永不违反约束）；原行 append-only 一字不动。无未冲正
-    /// 流水（从未扣过/已修正过）则什么都不做（幂等）。
+    /// 原行被 NOT EXISTS 排除），追加 Direction=-1 冲正行；原行 append-only
+    /// 一字不动。无未冲正流水（从未扣过/已修正过）则什么都不做（幂等）。
+    /// 包回补 +1 走 CAS 式 ExecuteUpdate，与冲正行同一显式事务提交
+    /// （R12 点 3，见 <see cref="RestorePackSessionAsync"/>）。
     /// </summary>
     private async Task ReverseLatestAsync(ClassSession session, int studentId, int operatorId)
     {
@@ -243,13 +297,9 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
             return;
         }
 
-        // 包回补与冲正行同一次 SaveChanges 提交。
-        var pack = await db.SessionPacks.SingleOrDefaultAsync(p => p.Id == original.SessionPackId);
-        if (pack is not null)
-        {
-            pack.RemainingSessions += 1;
-        }
-
+        // 包回补与冲正行同一显式事务：要么都提交，要么都不提交。
+        await using var tx = await db.Database.BeginTransactionAsync();
+        await RestorePackSessionAsync(original.SessionPackId);
         db.Consumptions.Add(new Consumption
         {
             StudentId = studentId,
@@ -264,5 +314,46 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
             // InstitutionId 留 0：SaveChanges 按当前员工令牌自动填充。
         });
         await db.SaveChangesAsync();
+        await tx.CommitAsync();
     }
+
+    /// <summary>
+    /// 双 Present 竞态输家的自冲正（R12 点 2）：按 Id 确定性冲正本次调用
+    /// 自己刚插入的 +1 扣课行（无 LIFO 查找，绝不冲正赢家的流水），追加
+    /// Direction=-1、Kind=Reversal、Reason="点名修正"、ReversesConsumptionId=
+    /// 自己行 的新流水并回补包 +1，同一显式事务提交；原行 append-only
+    /// 一字不动。恰一个竞态者自冲正（upsert 发现既有 Present 行的那一个）。
+    /// </summary>
+    private async Task SelfReverseAsync(Consumption own, int operatorId)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync();
+        await RestorePackSessionAsync(own.SessionPackId);
+        db.Consumptions.Add(new Consumption
+        {
+            StudentId = own.StudentId,
+            SessionPackId = own.SessionPackId,
+            ClassSessionId = own.ClassSessionId,
+            Kind = ConsumptionKind.Reversal,
+            Direction = -1,
+            Reason = "点名修正",
+            ReversesConsumptionId = own.Id,
+            OperatorId = operatorId,
+            CreatedAt = DateTime.Now,
+            // InstitutionId 留 0：SaveChanges 按当前员工令牌自动填充。
+        });
+        await db.SaveChangesAsync();
+        await tx.CommitAsync();
+    }
+
+    /// <summary>
+    /// 包余量 +1 回补（R12 点 3，绑定）：CAS 式 ExecuteUpdate 直接对数据库
+    /// 求值（RemainingSessions = RemainingSessions + 1，WHERE Id==packId），
+    /// 由调用方在同一显式事务内与冲正行一起提交——绝不跟踪读-改-写，
+    /// 消除"并发扣减 vs 回补"用陈旧快照互相覆盖账务的窗口。
+    /// </summary>
+    private async Task RestorePackSessionAsync(int packId) =>
+        await db.SessionPacks
+            .Where(p => p.Id == packId)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(p => p.RemainingSessions, p => p.RemainingSessions + 1));
 }

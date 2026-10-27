@@ -1,5 +1,7 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
 using TrainSaas.Api.Domain;
@@ -23,6 +25,9 @@ namespace TrainSaas.Tests.Unit;
 /// "不在名单且无可用课时包"且不落点名行；逐项部分成功互不影响。</item>
 /// <item>守卫：空名单 400；名单内重复学员 400；非 Admin 非授课教师 403；
 /// 未知课次 404。</item>
+/// <item>竞态收敛（R12 修复）：双 Present 竞态输家自冲正自己的扣课（确定性
+/// 按 Id），净扣恰 1；Leave 请求 upsert 读到并发写入的 Present 行时先冲正
+/// 再覆写，净扣 0——读-改-写与唯一索引冲突两条路径对称收敛，无静默漏账。</item>
 /// </list>
 /// </summary>
 public class AttendanceServiceTests
@@ -50,6 +55,16 @@ public class AttendanceServiceTests
         ClassTemplate Template,
         ClassSession Session);
 
+    /// <summary>核心种子（员工/产品/模板/课次）——供内存库与临时文件库夹具共用。</summary>
+    private sealed record Core(
+        Staff Teacher,
+        Staff OtherTeacher,
+        Staff Sales,
+        Staff Admin,
+        Product Product,
+        ClassTemplate Template,
+        ClassSession Session);
+
     private static FakeCurrentUser AsCaller(Staff staff) => new()
     {
         UserType = UserType.Staff,
@@ -60,9 +75,74 @@ public class AttendanceServiceTests
         Name = staff.Name,
     };
 
-    private static async Task<Fixture> CreateFixtureAsync()
+    /// <summary>
+    /// 竞态重放装饰器（测试缝）：在输家真正扣课之前，先让"并发赢家"完整落库
+    /// （扣课 + 写点名行）——确定性重现"prev 读取为 null → 输家扣课 → upsert
+    /// 读到并发写入的 Present 行"的交错窗口（R12 修复点 2）。
+    /// </summary>
+    private sealed class RacingDeductionService(IDeductionService inner, Func<Task> winnerWrites)
+        : IDeductionService
     {
-        var (db, conn) = TestDb.Create(SeedUser);
+        public async Task<Consumption> DeductAsync(
+            int studentId, int productId, int? classSessionId, ConsumptionKind kind, int operatorId,
+            string? reason = null)
+        {
+            await winnerWrites();
+            return await inner.DeductAsync(studentId, productId, classSessionId, kind, operatorId, reason);
+        }
+    }
+
+    /// <summary>
+    /// 竞态重放拦截器（测试缝）：第 2 次读 Attendances 的 SELECT（即 upsert 的
+    /// 行读取；第 1 次是 MarkOneAsync 的 prev 读取）执行之前，先让"并发赢家"
+    /// 在独立连接上完整落库——确定性重现"prev 读 null → upsert 读到并发写入的
+    /// Present 行"（R12 修复点 1；双上下文 + 临时文件库）。
+    /// </summary>
+    private sealed class RaceOnSecondAttendanceRead(Func<Task> winnerWrites) : DbCommandInterceptor
+    {
+        private readonly DbCommand?[] _counted = new DbCommand?[4];
+        private int _attendanceReads;
+
+        /// <summary>钩子是否触发过（测试自证确实走到了竞态交错窗口）。</summary>
+        public bool HookFired { get; private set; }
+
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result)
+        {
+            MaybeRace(command).GetAwaiter().GetResult();
+            return base.ReaderExecuting(command, eventData, result);
+        }
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData commandEventData,
+            InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            await MaybeRace(command);
+            return await base.ReaderExecutingAsync(command, commandEventData, result, cancellationToken);
+        }
+
+        private async Task MaybeRace(DbCommand command)
+        {
+            // ReaderExecuting 只为 SELECT 触发；点名行读取的 SQL 含 "Attendances"
+            //（prev 读=第 1 次，upsert 读=第 2 次）。命令实例去重防御同步/异步
+            // 双派发的重复计数。
+            if (!command.CommandText.Contains("Attendances") || _counted.Contains(command))
+            {
+                return;
+            }
+
+            _counted[_attendanceReads % _counted.Length] = command;
+            _attendanceReads++;
+            if (_attendanceReads == 2)
+            {
+                HookFired = true;
+                await winnerWrites();
+            }
+        }
+    }
+
+    private static async Task<Core> SeedCoreAsync(AppDbContext db)
+    {
         var teacher = new Staff
         {
             InstitutionId = 1, Name = "授课教师", Phone = "13911113001",
@@ -108,9 +188,17 @@ public class AttendanceServiceTests
         };
         db.ClassSessions.Add(session);
         await db.SaveChangesAsync();
+        return new Core(teacher, otherTeacher, sales, admin, product, template, session);
+    }
 
-        var attendance = new AttendanceService(db, new DeductionService(db));
-        return new Fixture(db, attendance, conn, teacher, otherTeacher, sales, admin, product, template, session);
+    private static async Task<Fixture> CreateFixtureAsync()
+    {
+        var (db, conn) = TestDb.Create(SeedUser);
+        var core = await SeedCoreAsync(db);
+        return new Fixture(
+            db, new AttendanceService(db, new DeductionService(db)), conn,
+            core.Teacher, core.OtherTeacher, core.Sales, core.Admin,
+            core.Product, core.Template, core.Session);
     }
 
     private static async Task<Student> SeedStudentAsync(AppDbContext db, string phone)
@@ -153,6 +241,48 @@ public class AttendanceServiceTests
         db.SessionPacks.Add(pack);
         await db.SaveChangesAsync();
         return pack;
+    }
+
+    /// <summary>
+    /// 临时文件库上下文（竞态测试）：同一文件、独立连接/上下文（两个"并发
+    /// 请求"），可选挂 DbCommandInterceptor 做确定性交错重放。
+    /// </summary>
+    private static AppDbContext CreateFileDb(
+        string dataSource, FakeCurrentUser user, DbCommandInterceptor? interceptor = null)
+    {
+        var builder = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(dataSource);
+        if (interceptor is not null)
+        {
+            builder.AddInterceptors(interceptor);
+        }
+        return new AppDbContext(builder.Options, user);
+    }
+
+    private static FakeCurrentUser RaceUser(string phone, string name) => new()
+    {
+        UserType = UserType.Staff,
+        InstitutionId = 1,
+        StaffId = 1,
+        Role = StaffRole.Admin,
+        Phone = phone,
+        Name = name,
+    };
+
+    private static void TryDeleteDbFiles(string dbPath)
+    {
+        foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
+        {
+            try
+            {
+                File.Delete(dbPath + suffix);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
     }
 
     private static Task<AttendanceResult> MarkPresentAsync(Fixture f, Staff caller, params int[] studentIds) =>
@@ -471,5 +601,167 @@ public class AttendanceServiceTests
         var row = Assert.Single(rows);
         Assert.Equal(withPack.Id, row.StudentId);
         Assert.Single(await f.Db.Consumptions.AsNoTracking().ToListAsync());
+    }
+
+    /// <summary>
+    /// R12 修复点 2：双 Present 竞态输家自冲正。确定性交错（临时文件库 +
+    /// 双上下文 + DeductAsync 装饰器）：输家 prev 读到 null → 赢家在输家扣课
+    /// 前完整落库（扣课 + Present 行）→ 输家照常扣课 → upsert 读到已 Present
+    /// 的行 → 输家按 Id 自冲正自己刚插入的 +1（Direction=-1、Kind=Reversal、
+    /// Reason="点名修正"、ReversesConsumptionId=自己的行）并回补包 +1。
+    /// 断言：恰一条未冲正 +1（赢家的）；恰一条 -1 指向输家自己的行；包余量
+    /// 净扣 1；单一点名行 Present；输家 MarkResult Ok=true。
+    /// </summary>
+    [Fact]
+    public async Task Raced_present_mark_self_reverses_losing_deduction()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"trainsaas-race-pp-{Guid.NewGuid():N}.db");
+        var dataSource = $"DataSource={dbPath}";
+        try
+        {
+            Core core;
+            Student student;
+            SessionPack pack;
+            using (var seed = CreateFileDb(dataSource, RaceUser("13900000001", "播种管理员")))
+            {
+                seed.Database.EnsureCreated();
+                core = await SeedCoreAsync(seed);
+                student = await SeedStudentAsync(seed, "13811114101");
+                await EnrollAsync(seed, core.Template.Id, student.Id);
+                pack = await SeedPackAsync(seed, student.Id, core.Product.Id, 709, 5);
+            }
+
+            // 赢家（独立连接/上下文）：在输家真正扣课之前完整点名 Present。
+            using var winnerDb = CreateFileDb(dataSource, RaceUser("13900000002", "赢家上下文"));
+            var winner = new AttendanceService(winnerDb, new DeductionService(winnerDb));
+            var marks = new List<MarkItem> { new(student.Id, AttendanceMark.Present) };
+
+            // 输家：装饰器在输家 DeductAsync 之前先让赢家完整落库（确定性
+            // 重现"prev 读 null → 扣课 → upsert 读到竞入 Present 行"）。
+            using var loserDb = CreateFileDb(dataSource, RaceUser("13900000003", "输家上下文"));
+            var loser = new AttendanceService(
+                loserDb,
+                new RacingDeductionService(
+                    new DeductionService(loserDb),
+                    () => winner.MarkAsync(core.Session.Id, marks, AsCaller(core.Teacher))));
+
+            var result = await loser.MarkAsync(core.Session.Id, marks, AsCaller(core.Admin));
+
+            // 收敛结果 Ok=true（行已 Present，终态正确）。
+            Assert.True(Assert.Single(result.Results).Ok);
+
+            // 单一点名行，Present（唯一索引收敛后仍是一行）。
+            var row = Assert.Single(await loserDb.Attendances.AsNoTracking().ToListAsync());
+            Assert.Equal(AttendanceMark.Present, row.Mark);
+            Assert.Equal(core.Session.Id, row.ClassSessionId);
+            Assert.Equal(student.Id, row.StudentId);
+
+            // 流水：赢家 +1、输家 +1、输家自冲正 -1（确定性指向输家自己的行）。
+            var consumptions = await loserDb.Consumptions.AsNoTracking()
+                .OrderBy(c => c.Id).ToListAsync();
+            Assert.Equal(3, consumptions.Count);
+            var pluses = consumptions.Where(c => c.Direction == 1).ToList();
+            Assert.Equal(2, pluses.Count);
+            var winnerRow = pluses[0]; // 赢家先落库 → Id 更小
+            var loserRow = pluses[1];  // 输家自己刚插入的扣课行
+            Assert.Equal(ConsumptionKind.RollCall, winnerRow.Kind);
+            Assert.Equal(ConsumptionKind.RollCall, loserRow.Kind);
+
+            var reversal = Assert.Single(consumptions, c => c.Direction == -1);
+            Assert.Equal(ConsumptionKind.Reversal, reversal.Kind);
+            Assert.Equal("点名修正", reversal.Reason);
+            Assert.Equal(loserRow.Id, reversal.ReversesConsumptionId);
+            Assert.Equal(loserRow.SessionPackId, reversal.SessionPackId);
+            Assert.Equal(student.Id, reversal.StudentId);
+            Assert.Equal(core.Session.Id, reversal.ClassSessionId);
+            Assert.Equal(core.Admin.Id, reversal.OperatorId);
+
+            // 恰好一条未被冲正的 +1：赢家的（输家的已被自冲正）。
+            var unreversed = pluses
+                .Where(p => consumptions.All(r => r.ReversesConsumptionId != p.Id))
+                .ToList();
+            Assert.Equal(winnerRow.Id, Assert.Single(unreversed).Id);
+
+            // 包余量净扣恰 1：5 → 4（-1 赢家、-1 输家、+1 自冲正回补）。
+            Assert.Equal(4, (await loserDb.SessionPacks.AsNoTracking()
+                .SingleAsync(p => p.Id == pack.Id)).RemainingSessions);
+        }
+        finally
+        {
+            TryDeleteDbFiles(dbPath);
+        }
+    }
+
+    /// <summary>
+    /// R12 修复点 1：Present→Leave 竞态对称收敛。Leave 请求 prev 读到 null
+    /// （不扣课、不冲正）→ 拦截器在输家 upsert 的行读取（第 2 次读
+    /// Attendances）执行前让赢家在独立连接上完整落库 Present → 读-改-写分支
+    /// 必须与唯一索引冲突分支行为一致：先冲正（最新未冲正 +1 = 赢家的扣课）
+    /// 再覆写 Leave。断言：净扣 0（一条 +1 与指向它的一条 -1）、包余量完全
+    /// 还原、行终态 Leave、输家 Ok=true。
+    /// </summary>
+    [Fact]
+    public async Task Raced_present_to_leave_reverses_before_overwrite()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"trainsaas-race-pl-{Guid.NewGuid():N}.db");
+        var dataSource = $"DataSource={dbPath}";
+        try
+        {
+            Core core;
+            Student student;
+            SessionPack pack;
+            using (var seed = CreateFileDb(dataSource, RaceUser("13900000001", "播种管理员")))
+            {
+                seed.Database.EnsureCreated();
+                core = await SeedCoreAsync(seed);
+                student = await SeedStudentAsync(seed, "13811114102");
+                await EnrollAsync(seed, core.Template.Id, student.Id);
+                pack = await SeedPackAsync(seed, student.Id, core.Product.Id, 710, 5);
+            }
+
+            using var winnerDb = CreateFileDb(dataSource, RaceUser("13900000002", "赢家上下文"));
+            var winner = new AttendanceService(winnerDb, new DeductionService(winnerDb));
+            var winnerMarks = new List<MarkItem> { new(student.Id, AttendanceMark.Present) };
+
+            // 输家标 Leave；竞态钩子挂在输家上下文：upsert 行读取前赢家落库。
+            var interceptor = new RaceOnSecondAttendanceRead(
+                () => winner.MarkAsync(core.Session.Id, winnerMarks, AsCaller(core.Teacher)));
+            using var loserDb = CreateFileDb(dataSource, RaceUser("13900000003", "输家上下文"), interceptor);
+            var loser = new AttendanceService(loserDb, new DeductionService(loserDb));
+
+            var result = await loser.MarkAsync(
+                core.Session.Id,
+                [new MarkItem(student.Id, AttendanceMark.Leave)],
+                AsCaller(core.Admin));
+
+            Assert.True(Assert.Single(result.Results).Ok);
+            Assert.True(interceptor.HookFired, "竞态钩子未触发：测试没有走到交错窗口");
+
+            // 行终态 Leave（Leave 覆写竞入的 Present），单行。
+            var row = Assert.Single(await loserDb.Attendances.AsNoTracking().ToListAsync());
+            Assert.Equal(AttendanceMark.Leave, row.Mark);
+            Assert.Equal(student.Id, row.StudentId);
+
+            // 净扣 0：赢家的一条 +1 与指向它的一条 -1 冲正（覆写前先冲正）。
+            var consumptions = await loserDb.Consumptions.AsNoTracking()
+                .OrderBy(c => c.Id).ToListAsync();
+            Assert.Equal(2, consumptions.Count);
+            var plus = Assert.Single(consumptions, c => c.Direction == 1);
+            var minus = Assert.Single(consumptions, c => c.Direction == -1);
+            Assert.Equal(ConsumptionKind.Reversal, minus.Kind);
+            Assert.Equal("点名修正", minus.Reason);
+            Assert.Equal(plus.Id, minus.ReversesConsumptionId);
+            Assert.Equal(plus.SessionPackId, minus.SessionPackId);
+            Assert.Equal(student.Id, minus.StudentId);
+            Assert.Equal(core.Session.Id, minus.ClassSessionId);
+
+            // 包余量完全还原：5 → 4（赢家扣）→ 5（冲正回补）。
+            Assert.Equal(5, (await loserDb.SessionPacks.AsNoTracking()
+                .SingleAsync(p => p.Id == pack.Id)).RemainingSessions);
+        }
+        finally
+        {
+            TryDeleteDbFiles(dbPath);
+        }
     }
 }
