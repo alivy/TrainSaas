@@ -18,6 +18,9 @@ public static class AuthPolicies
     /// <summary>员工且 role ∈ {Admin, Sales}（Task 6：课程产品的只读面）。</summary>
     public const string AdminOrSales = nameof(AdminOrSales);
 
+    /// <summary>员工且 role ∈ {Admin, Sales, FrontDesk}（Task 7：学员的创建/修改入口，Teacher 不在其内）。</summary>
+    public const string AdminSalesFrontDesk = nameof(AdminSalesFrontDesk);
+
     /// <summary>
     /// Registers the fixed policies. Policies key off the literal JWT claims:
     /// <c>user_type</c> (platform|staff|parent) and, for AdminOnly,
@@ -45,5 +48,11 @@ public static class AuthPolicies
             policy.RequireAuthenticatedUser()
                 .RequireClaim("user_type", "staff")
                 .RequireClaim("role", "Admin", "Sales"));
+
+        // AdminSalesFrontDesk = 员工且 role ∈ {Admin, Sales, FrontDesk}（学员写入）.
+        options.AddPolicy(AdminSalesFrontDesk, policy =>
+            policy.RequireAuthenticatedUser()
+                .RequireClaim("user_type", "staff")
+                .RequireClaim("role", "Admin", "Sales", "FrontDesk"));
     }
 }
