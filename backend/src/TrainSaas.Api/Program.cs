@@ -9,6 +9,7 @@ using Microsoft.IdentityModel.Tokens;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
 using TrainSaas.Api.Errors;
+using TrainSaas.Api.Services;
 
 // Claim-name fidelity (Global Constraints): the JWT handlers must never rewrite
 // the fixed claim names (user_type, institution_id, staff_id, role, phone, name)
@@ -29,6 +30,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddSingleton<IPasswordHasherService, PasswordHasherService>();
 builder.Services.AddSingleton<TokenService>();
+builder.Services.AddScoped<InstitutionProvisioningService>();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")));
 
