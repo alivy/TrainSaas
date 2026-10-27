@@ -613,6 +613,9 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     /// 库里一节实例都没有，家长不该看到空课表。种子只建模板 + 报名，全程不调用
     /// 任何机构侧接口；断言：返回未来实例、落库行的 InstitutionId 显式正确、
     /// 只写本机构（绝不污染他机构日历）、二次调用不产生重复。
+    /// C1：响应行按时间戳口径、落库行按日期口径分别断言（生成按日期闭区间
+    /// 迭代，窗口末端日期的实例可能落库但被响应过滤）——两个口径的期望都与
+    /// 运行时刻无关，测试不再只在 21:00-24:00 之间才绿。
     /// </summary>
     [Fact]
     public async Task Parent_schedule_materializes_sessions_without_org_side_query()
@@ -651,9 +654,19 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         var rows = await resp.Content.ReadFromJsonAsync<JsonElement>();
 
-        // 期望实例 = 窗口 [now, now+14d] 内每个匹配 DayOfWeek 的日期（与实现同口径）。
-        var expected = ExpectedWeeklyStarts(template, now, now.AddDays(14));
+        // 两个口径（C1 修复：此前用同一份期望同时断言响应与落库，00:00-21:00
+        // 之间必红）：
+        // - 响应口径 = 时间戳粒度：schedule 端点过滤 StartAt ∈ [now, now+14d]，
+        //   窗口末端"日期匹配但时刻越过 now+14d"的实例被过滤掉；
+        // - 落库口径 = 日期粒度：生成实现按日期迭代 [now.Date, (now+14d).Date]
+        //   （含两端），凡 DayOfWeek 匹配的日期都物化一行——即便该行时刻已越过
+        //   窗口上界（例如 now+3h 的模板在 21:00 前运行时会多落一节 +14d 日期的
+        //   实例）。持久化断言必须用日期口径，否则行数随时钟漂移。
+        var window = now.AddDays(14);
+        var expected = ExpectedWeeklyStarts(template, now, window);
+        var expectedPersisted = ExpectedPersistedStarts(template, now, window);
         Assert.NotEmpty(expected);
+        Assert.All(expected, s => Assert.Contains(s, expectedPersisted));
         Assert.Equal(expected, StartAtsOf(rows));
         Assert.All(rows.EnumerateArray(), row =>
         {
@@ -665,19 +678,20 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         });
 
         // 落库：家长上下文无租户，InstitutionId 必须显式写对；教师/状态取自模板。
+        // 行数按落库口径（日期粒度）断言，见上。
         var persisted = await SessionsOfAsync(org.Id);
-        Assert.Equal(expected.Count, persisted.Count);
+        Assert.Equal(expectedPersisted.Count, persisted.Count);
         Assert.All(persisted, cs =>
         {
             Assert.Equal(org.Id, cs.InstitutionId);
             Assert.Equal(template.Id, cs.TemplateId);
             Assert.Equal(teacher.Id, cs.TeacherId);
             Assert.Equal(SessionStatus.Scheduled, cs.Status);
-            Assert.Contains(cs.StartAt, expected);
+            Assert.Contains(cs.StartAt, expectedPersisted);
             Assert.Equal(cs.StartAt.AddMinutes(90), cs.EndAt);
         });
         // 只为该机构生成：全库增量恰等于本机构新增行数（隔壁机构一行都没多）。
-        Assert.Equal(expected.Count, await CountSessionsAsync());
+        Assert.Equal(expectedPersisted.Count, await CountSessionsAsync());
         Assert.Empty(await SessionsOfAsync(neighbour.Id));
 
         // 二次调用幂等：响应一致，库里不增行、不出现重复 (TemplateId, StartAt)。
@@ -688,7 +702,7 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(persisted.Count, afterSecond.Count);
         Assert.Equal(afterSecond.Count,
             afterSecond.Select(cs => (cs.TemplateId, cs.StartAt)).Distinct().Count());
-        Assert.Equal(expected.Count, await CountSessionsAsync());
+        Assert.Equal(expectedPersisted.Count, await CountSessionsAsync());
     }
 
     /// <summary>按模板的每周时刻展开窗口内的实例起点（升序），与生成实现同口径。</summary>
@@ -707,6 +721,29 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
             if (startAt >= now && startAt <= until)
             {
                 starts.Add(startAt);
+            }
+        }
+
+        return starts.OrderBy(s => s).ToList();
+    }
+
+    /// <summary>
+    /// 落库口径的期望实例（C1）：生成实现（SessionGenerationService.
+    /// AddMissingSessionsAsync）按**日期**迭代 [from.Date, effectiveTo.Date]
+    /// 闭区间，凡 DayOfWeek 匹配的日期都物化 date+StartTime 一行，不再对该行
+    /// 时刻做 [from, until] 过滤——所以持久化行数按日期粒度计算，与响应行
+    /// （时间戳过滤，见 <see cref="ExpectedWeeklyStarts"/>）可以相差窗口末端
+    /// 的一行。effectiveTo = min(now+days, now+28d)（days=14 时即 now+14d）。
+    /// </summary>
+    private static List<DateTime> ExpectedPersistedStarts(
+        ClassTemplate template, DateTime now, DateTime until)
+    {
+        var starts = new List<DateTime>();
+        for (var date = now.Date; date <= until.Date; date = date.AddDays(1))
+        {
+            if (date.DayOfWeek == template.DayOfWeek)
+            {
+                starts.Add(date.Add(template.StartTime.ToTimeSpan()));
             }
         }
 
