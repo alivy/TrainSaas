@@ -1,6 +1,13 @@
 namespace TrainSaas.Api.Dtos;
 
 /// <summary>
+/// POST /api/org/parents/reset-password {phone}（规格 §6.2，机构员工发起的
+/// 家长密码重置）：phone 须匹配 <c>^1\d{10}$</c>，且调用者机构内存在该手机号
+/// 的在读学员；重置为初始密码 123456。
+/// </summary>
+public record ParentPasswordResetRequest(string Phone);
+
+/// <summary>
 /// GET /api/parent/children 行：{studentId,name,institutionId,institutionName,
 /// institutionCode}。同手机号可跨机构有多个孩子（设计内的租户过滤豁免），
 /// 按 institutionId、studentId 升序；仅 IsActive 的学员。

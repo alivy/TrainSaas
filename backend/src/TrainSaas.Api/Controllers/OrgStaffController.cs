@@ -38,11 +38,15 @@ public class OrgStaffController(StaffService staffService, ICurrentUser currentU
         return StatusCode(StatusCodes.Status201Created, ToCreatedResponse(staff));
     }
 
-    /// <summary>PUT /api/org/staff/{id} {name?,role?}——仅更新非 null 字段；未知 id 404。</summary>
+    /// <summary>
+    /// PUT /api/org/staff/{id} {name?,role?}——仅更新非 null 字段；未知 id 404。
+    /// 角色改写以调用者的**数据库状态**为准（I1：陈旧令牌窗口内被降级/停用者
+    /// 403，守卫在 StaffService）。
+    /// </summary>
     [HttpPut("{id}")]
     public async Task<IActionResult> Update(int id, UpdateStaffRequest request)
     {
-        await staffService.UpdateAsync(id, request);
+        await staffService.UpdateAsync(id, request, RequireStaffId());
         return NoContent();
     }
 
@@ -66,12 +70,13 @@ public class OrgStaffController(StaffService staffService, ICurrentUser currentU
 
     private async Task<IActionResult> SetActiveAsync(int id, bool active)
     {
-        if (currentUser.StaffId is not int staffId)
-            throw new ForbiddenActionException("非员工身份");
-
-        await staffService.SetActiveAsync(id, active, staffId);
+        await staffService.SetActiveAsync(id, active, RequireStaffId());
         return NoContent();
     }
+
+    /// <summary>防御性守卫：staff 令牌必含 staff_id，缺失即拒绝而非落脏数据。</summary>
+    private int RequireStaffId() =>
+        currentUser.StaffId ?? throw new ForbiddenActionException("非员工身份");
 
     private static StaffCreatedResponse ToCreatedResponse(Staff staff) =>
         new(staff.Id, staff.Name, staff.Phone, staff.Role.ToString(), staff.IsActive);

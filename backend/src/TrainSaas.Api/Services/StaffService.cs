@@ -83,9 +83,22 @@ public class StaffService(AppDbContext db, IPasswordHasherService hasher)
     /// PUT {name?,role?}——仅更新非 null 字段。把 Admin 降级（无论其自身是否
     /// 活跃）前必须仍有另一名活跃 Admin，否则机构将无人能进入 Admin 端点 →
     /// 409。未知 id（含跨机构不可见）→ 404。
+    ///
+    /// I1（最终审查）：角色改写另设**调用者数据库状态守卫**——令牌里的
+    /// role=Admin 只在签发那一刻可信，过期窗口内被降级/停用的管理员若仍能
+    /// 凭旧令牌改写角色，就可以把自己晋升回 Admin（永久改写数据库权限）。
+    /// 因此凡请求携带 Role，就先加载调用者本人的库内行并要求其仍为活跃
+    /// Admin，否则 403（镜像 <see cref="SetActiveAsync"/> 的"防御令牌过期
+    /// 窗口"模式）。名称改写不在守卫范围内（每请求全量状态校验超出本次
+    /// 修复波范围，见最终审查 out-of-scope 裁定）。
     /// </summary>
-    public async Task UpdateAsync(int id, UpdateStaffRequest request)
+    public async Task UpdateAsync(int id, UpdateStaffRequest request, int currentStaffId)
     {
+        if (request.Role is not null)
+        {
+            await EnsureCallerIsActiveAdminAsync(currentStaffId);
+        }
+
         var staff = await FindStaffOrThrowAsync(id);
 
         if (request.Name is not null)
@@ -106,6 +119,19 @@ public class StaffService(AppDbContext db, IPasswordHasherService hasher)
         }
 
         await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// I1 调用者守卫：从数据库加载调用者本人的员工行（租户过滤器 = 调用者
+    /// 令牌机构，本人行必然可见），要求 IsActive 且 Role==Admin——行缺失、
+    /// 已停用或已降级一律 <see cref="ForbiddenActionException"/> 403。
+    /// </summary>
+    private async Task EnsureCallerIsActiveAdminAsync(int currentStaffId)
+    {
+        var caller = await db.Staff.AsNoTracking()
+            .SingleOrDefaultAsync(s => s.Id == currentStaffId);
+        if (caller is null || !caller.IsActive || caller.Role != StaffRole.Admin)
+            throw new ForbiddenActionException("当前账号已不是活跃管理员，无权修改角色");
     }
 
     /// <summary>

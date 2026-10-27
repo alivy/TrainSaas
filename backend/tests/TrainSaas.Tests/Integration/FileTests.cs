@@ -22,7 +22,11 @@ namespace TrainSaas.Tests.Integration;
 /// DbContext (ruling R3, the order service arrives in Task 10) — and
 /// GET /api/files/vouchers/{id} serves the bytes with the extension-inferred
 /// content type to the owning institution's staff only (cross-institution 404
-/// via the tenant filter, anonymous 401 via the StaffOnly policy).
+/// via the tenant filter, anonymous 401 via the StaffOnly policy). The three
+/// serving security branches (traversal FilePath, missing physical file,
+/// non-whitelisted extension) are pinned by T9① tests, and the anonymous
+/// logo/cover image route (GET /api/files/images/{**relativePath}, added by
+/// the final-review fix wave I3) is covered for both serving and rejection.
 ///
 /// ApiFactory runs with SeedDemoData=false, so each test seeds its own
 /// institutions/staff/orders via factory.Services.CreateScope() and drives
@@ -102,9 +106,12 @@ public class FileTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
     /// <summary>
     /// Seeds a voucher row straight into the DB. The FilePath need not exist on
-    /// disk when the expected outcome short-circuits before file resolution.
+    /// disk when the expected outcome short-circuits before file resolution;
+    /// pass a custom <paramref name="filePath"/> to pin the serving guards
+    /// (traversal / missing file / extension whitelist).
     /// </summary>
-    private async Task<Voucher> SeedVoucherAsync(int orderId, int institutionId, int uploadedById)
+    private async Task<Voucher> SeedVoucherAsync(
+        int orderId, int institutionId, int uploadedById, string? filePath = null)
     {
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -112,7 +119,7 @@ public class FileTests(ApiFactory factory) : IClassFixture<ApiFactory>
         {
             InstitutionId = institutionId,
             OrderId = orderId,
-            FilePath = $"voucher/{institutionId}/202610/seeded.png",
+            FilePath = filePath ?? $"voucher/{institutionId}/202610/seeded.png",
             UploadedById = uploadedById,
         };
         db.Vouchers.Add(voucher);
@@ -329,5 +336,169 @@ public class FileTests(ApiFactory factory) : IClassFixture<ApiFactory>
             Assert.False(await db.Vouchers.IgnoreQueryFilters()
                 .AnyAsync(v => v.OrderId == voided.Id || v.OrderId == cancelled.Id));
         }
+    }
+
+    /// <summary>Writes a file with the given relative path under the factory's upload root.</summary>
+    private async Task WriteUnderUploadRootAsync(string relativePath, byte[] content)
+    {
+        var full = Path.Combine(factory.UploadRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        await File.WriteAllBytesAsync(full, content);
+    }
+
+    /// <summary>
+    /// I3（最终审查补齐）：logo/cover 图片的匿名下发路由
+    /// GET /api/files/images/{**relativePath}。员工上传后匿名 GET 返回 200、
+    /// 扩展名推断的 content type 与逐字节一致的响应体；voucher/ 前缀绝不匿名
+    /// 下发（即便文件物理存在且经授权路由可取）。
+    /// </summary>
+    [Fact]
+    public async Task Public_image_route_serves_uploaded_logo_and_cover_anonymously()
+    {
+        var institution = await SeedInstitutionAsync("fx7");
+        await SeedStaffAsync(institution.Id, "13966600008");
+        var client = await LoginStaffClientAsync("13966600008");
+        var anonymous = factory.CreateClient();
+
+        // 员工上传 logo → 匿名 GET 返回的路径 → 200 + image/png + 字节一致。
+        var logo = await client.PostAsync(
+            "/api/org/files", ImageForm(PngBytes, "logo.png", "image/png", purpose: "logo"));
+        Assert.Equal(HttpStatusCode.OK, logo.StatusCode);
+        var logoPath = (await logo.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("path").GetString()!;
+        var getLogo = await anonymous.GetAsync($"/api/files/images/{logoPath}");
+        Assert.Equal(HttpStatusCode.OK, getLogo.StatusCode);
+        Assert.Equal("image/png", getLogo.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(PngBytes, await getLogo.Content.ReadAsByteArrayAsync());
+
+        // cover 同样可匿名下发；content type 按扩展名推断（.jpg → image/jpeg，
+        // 服务端不做魔数嗅探——文件体仍是那几字节）。
+        var cover = await client.PostAsync(
+            "/api/org/files", ImageForm(PngBytes, "cover.jpg", "image/jpeg", purpose: "cover"));
+        Assert.Equal(HttpStatusCode.OK, cover.StatusCode);
+        var coverPath = (await cover.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("path").GetString()!;
+        var getCover = await anonymous.GetAsync($"/api/files/images/{coverPath}");
+        Assert.Equal(HttpStatusCode.OK, getCover.StatusCode);
+        Assert.Equal("image/jpeg", getCover.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(PngBytes, await getCover.Content.ReadAsByteArrayAsync());
+
+        // 凭据的 staff-only 路由不受影响：匿名仍然 401（策略层）。
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync("/api/files/vouchers/1")).StatusCode);
+    }
+
+    /// <summary>
+    /// I3 的拒绝分支：voucher/ 前缀（文件真实存在也拒）、目录穿越（编码的
+    /// ../ 逃不出上传根）、前缀大小写敏感（LOGO/ 下真实存在的文件也拒）、
+    /// 未知扩展名（cover/ 下真实存在的 .txt 也拒）、不存在的路径——一律 404。
+    /// </summary>
+    [Fact]
+    public async Task Public_image_route_rejects_voucher_traversal_case_and_bad_extension()
+    {
+        var institution = await SeedInstitutionAsync("fx8");
+        var staff = await SeedStaffAsync(institution.Id, "13966600009");
+        var client = await LoginStaffClientAsync("13966600009");
+        var anonymous = factory.CreateClient();
+
+        // 一张真实存在的凭据文件：授权路由可取（200），匿名图片路由绝不给。
+        var order = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
+        var attach = await client.PostAsync(
+            $"/api/org/files/vouchers/{order.Id}", ImageForm(PngBytes, "receipt.png", "image/png"));
+        Assert.Equal(HttpStatusCode.Created, attach.StatusCode);
+        var voucherId = (await attach.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id").GetInt32();
+        string voucherPath;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            voucherPath = (await db.Vouchers.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(v => v.Id == voucherId)).FilePath;
+        }
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.GetAsync($"/api/files/vouchers/{voucherId}")).StatusCode);
+        var voucherViaImages = await anonymous.GetAsync($"/api/files/images/{voucherPath}");
+        Assert.Equal(HttpStatusCode.NotFound, voucherViaImages.StatusCode);
+
+        // 目录穿越：编码的 ../（%2f 不被客户端折叠）必须逃不出上传根 → 404。
+        var traversal = await anonymous.GetAsync(
+            "/api/files/images/logo/..%2f..%2f..%2f..%2fetc%2fpasswd");
+        Assert.Equal(HttpStatusCode.NotFound, traversal.StatusCode);
+        Assert.DoesNotContain("root:", await traversal.Content.ReadAsStringAsync());
+        // 字面 ../ 变体（被客户端 URI 规范化折叠）同样到不了任何文件 → 404。
+        Assert.Equal(HttpStatusCode.NotFound, (await anonymous.GetAsync(
+            "/api/files/images/logo/../../../../etc/passwd")).StatusCode);
+
+        // 前缀白名单大小写敏感：LOGO/ 下真实存在的文件也拒。
+        await WriteUnderUploadRootAsync("LOGO/real.png", PngBytes);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await anonymous.GetAsync("/api/files/images/LOGO/real.png")).StatusCode);
+
+        // 扩展名白名单：cover/ 下真实存在的 .txt 也拒（且绝不回显内容）。
+        await WriteUnderUploadRootAsync($"cover/{institution.Id}/202610/notes.txt",
+            "TOP-SECRET"u8.ToArray());
+        var txt = await anonymous.GetAsync($"/api/files/images/cover/{institution.Id}/202610/notes.txt");
+        Assert.Equal(HttpStatusCode.NotFound, txt.StatusCode);
+        Assert.DoesNotContain("TOP-SECRET", await txt.Content.ReadAsStringAsync());
+
+        // 不存在的路径 / 空路径 → 404。
+        Assert.Equal(HttpStatusCode.NotFound, (await anonymous.GetAsync(
+            $"/api/files/images/logo/{institution.Id}/209912/missing.png")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await anonymous.GetAsync("/api/files/images/")).StatusCode);
+    }
+
+    /// <summary>
+    /// T9①（最终审查必修延后项）：GET /api/files/vouchers/{id} 的三个安全分支
+    /// 此前零测试覆盖——本测试把它们钉死，移除 ResolveForServing 的任何一道
+    /// 防线（根内断言 / 物理存在 / 扩展名白名单）都会让全套变红：
+    /// ① FilePath="../../etc/passwd"（根外穿越，文件物理存在）→ 404；
+    /// ② 行存在但物理文件缺失 → 404；
+    /// ③ FilePath 为 .txt（文件物理存在）→ 404，且绝不回显内容。
+    /// 对照组：同目录下的合法 .png 正常下发（404 来自防线而非路由坏了）。
+    /// </summary>
+    [Fact]
+    public async Task Voucher_serving_traversal_missing_file_and_bad_extension_return_404()
+    {
+        var institution = await SeedInstitutionAsync("fx9");
+        var staff = await SeedStaffAsync(institution.Id, "13966600010");
+        var client = await LoginStaffClientAsync("13966600010");
+
+        // ① 穿越：FilePath 指向上传根之外（/etc/passwd 物理存在）→ 404。
+        var traversalOrder = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
+        var traversalVoucher = await SeedVoucherAsync(
+            traversalOrder.Id, institution.Id, staff.Id, filePath: "../../etc/passwd");
+        var traversal = await client.GetAsync($"/api/files/vouchers/{traversalVoucher.Id}");
+        Assert.Equal(HttpStatusCode.NotFound, traversal.StatusCode);
+        await ProblemDetailAsync(traversal);
+        Assert.DoesNotContain("root:", await traversal.Content.ReadAsStringAsync());
+
+        // ② 行存在、物理文件缺失 → 404。
+        var missingOrder = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
+        var missing = await SeedVoucherAsync(missingOrder.Id, institution.Id, staff.Id);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await client.GetAsync($"/api/files/vouchers/{missing.Id}")).StatusCode);
+
+        // ③ 扩展名白名单：.txt 文件物理存在也 404，内容绝不外泄。
+        var txtRelative = $"voucher/{institution.Id}/202610/notes.txt";
+        await WriteUnderUploadRootAsync(txtRelative, "TOP-SECRET"u8.ToArray());
+        var txtOrder = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
+        var txtVoucher = await SeedVoucherAsync(
+            txtOrder.Id, institution.Id, staff.Id, filePath: txtRelative);
+        var txt = await client.GetAsync($"/api/files/vouchers/{txtVoucher.Id}");
+        Assert.Equal(HttpStatusCode.NotFound, txt.StatusCode);
+        Assert.DoesNotContain("TOP-SECRET", await txt.Content.ReadAsStringAsync());
+
+        // 对照组：合法 .png（物理存在）正常下发，content type 按扩展名推断。
+        var pngRelative = $"voucher/{institution.Id}/202610/real.png";
+        await WriteUnderUploadRootAsync(pngRelative, PngBytes);
+        var pngOrder = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
+        var pngVoucher = await SeedVoucherAsync(
+            pngOrder.Id, institution.Id, staff.Id, filePath: pngRelative);
+        var ok = await client.GetAsync($"/api/files/vouchers/{pngVoucher.Id}");
+        Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+        Assert.Equal("image/png", ok.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(PngBytes, await ok.Content.ReadAsByteArrayAsync());
     }
 }

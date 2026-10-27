@@ -760,6 +760,87 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
     private async Task<int> CountSessionsAsync() =>
         await WithDbAsync(db => db.ClassSessions.IgnoreQueryFilters().CountAsync());
 
+    /// <summary>
+    /// 规格 §6.2（I2，最终审查补齐）：机构员工发起的家长密码重置。
+    /// POST /api/org/parents/reset-password {phone} [AdminSalesFrontDesk]：
+    /// 资格要求是"调用者机构内有该手机号的在读学员"（租户过滤器天然限定本
+    /// 机构）——隔壁机构员工（其机构只有别手机号的孩子）、未知手机号、已停用
+    /// 学员、有学员但无家长账号一律 404（同态响应，不泄露存在性）；格式非法
+    /// 400；Teacher 403。重置成功后家长立即可用 123456 登录，且自助改密不受
+    /// 影响。
+    /// </summary>
+    [Fact]
+    public async Task Staff_can_reset_parent_password_for_own_institution_child()
+    {
+        const string phone = "13812009001";
+        var org = await SeedInstitutionAsync("pr1");
+        var other = await SeedInstitutionAsync("pr2");
+        var frontDesk = await SeedStaffAsync(org.Id, "13912009001", StaffRole.FrontDesk);
+        var teacher = await SeedStaffAsync(org.Id, "13912009002", StaffRole.Teacher);
+        var otherStaff = await SeedStaffAsync(other.Id, "13912009003", StaffRole.Admin);
+        await SeedParentAsync(phone);
+        await SeedStudentAsync(org.Id, phone, "重置学员");
+        // 隔壁机构只有别手机号的孩子：其员工对该家长的密码无权。
+        await SeedStudentAsync(other.Id, "13812009002", "隔壁学员");
+        // 已停用学员（有家长账号）：不满足"在读"资格。
+        await SeedParentAsync("13812009006");
+        await SeedStudentAsync(org.Id, "13812009006", "停用学员", isActive: false);
+        // 有在读学员但没有家长账号。
+        await SeedStudentAsync(org.Id, "13812009005", "无账号学员");
+
+        // 家长先自助把密码改成别的（这样"重置回 123456"才可观察）。
+        var parentClient = await LoginParentClientAsync(phone);
+        Assert.Equal(HttpStatusCode.NoContent, (await parentClient.PostAsJsonAsync(
+            "/api/parent/change-password",
+            new { oldPassword = DefaultPassword.Initial, newPassword = "changed-09001" })).StatusCode);
+        var anon = factory.CreateClient();
+        Assert.Equal(HttpStatusCode.OK, (await anon.PostAsJsonAsync("/api/parent/auth/login",
+            new { phone, password = "changed-09001" })).StatusCode);
+
+        // Teacher 不在 AdminSalesFrontDesk 策略内 → 403。
+        var teacherClient = await LoginStaffClientAsync(teacher.Phone);
+        Assert.Equal(HttpStatusCode.Forbidden, (await teacherClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone })).StatusCode);
+
+        // 手机号格式非法 → 400。
+        var staffClient = await LoginStaffClientAsync(frontDesk.Phone);
+        Assert.Equal(HttpStatusCode.BadRequest, (await staffClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone = "123" })).StatusCode);
+
+        // 隔壁机构员工 → 404（其租户内没有该手机号的在读学员，不泄露存在性）。
+        var otherClient = await LoginStaffClientAsync(otherStaff.Phone);
+        Assert.Equal(HttpStatusCode.NotFound, (await otherClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone })).StatusCode);
+
+        // 未知手机号（本机构无此学员）→ 404。
+        Assert.Equal(HttpStatusCode.NotFound, (await staffClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone = "13812009999" })).StatusCode);
+
+        // 已停用学员 → 404（仅在读学员授权重置）。
+        Assert.Equal(HttpStatusCode.NotFound, (await staffClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone = "13812009006" })).StatusCode);
+
+        // 有在读学员但无家长账号 → 404。
+        Assert.Equal(HttpStatusCode.NotFound, (await staffClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone = "13812009005" })).StatusCode);
+
+        // 本机构前台重置 → 204；家长立即可用 123456 登录，旧密码失效。
+        Assert.Equal(HttpStatusCode.NoContent, (await staffClient.PostAsJsonAsync(
+            "/api/org/parents/reset-password", new { phone })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await anon.PostAsJsonAsync("/api/parent/auth/login",
+            new { phone, password = DefaultPassword.Initial })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.PostAsJsonAsync(
+            "/api/parent/auth/login", new { phone, password = "changed-09001" })).StatusCode);
+
+        // 重置后家长自助改密依旧可用。
+        var parentClient2 = await LoginParentClientAsync(phone);
+        Assert.Equal(HttpStatusCode.NoContent, (await parentClient2.PostAsJsonAsync(
+            "/api/parent/change-password",
+            new { oldPassword = DefaultPassword.Initial, newPassword = "self-09001x" })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await anon.PostAsJsonAsync("/api/parent/auth/login",
+            new { phone, password = "self-09001x" })).StatusCode);
+    }
+
     [Fact]
     public async Task Profile_update_reflects_in_public_org_page()
     {

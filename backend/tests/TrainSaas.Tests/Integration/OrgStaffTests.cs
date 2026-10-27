@@ -335,4 +335,61 @@ public class OrgStaffTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.Conflict, deactivate.StatusCode);
         Assert.True((await GetStaffRowAsync(second.Id)).IsActive);
     }
+
+    /// <summary>
+    /// I1（最终审查）：陈旧令牌窗口内的角色改写以数据库真值为准。被降级/停用的
+    /// 管理员令牌仍带 role=Admin（有效期数小时），自晋升回 Admin 或改写他人角色
+    /// 一律 403 且数据库不变；真正的库内活跃 Admin 不受影响（还能把被降级者
+    /// 晋升回来）。守卫只看调用者的库内行（IsActive && Role==Admin），与目标无关。
+    /// </summary>
+    [Fact]
+    public async Task Demoted_admin_cannot_repromote_self_with_stale_token()
+    {
+        var institution = await SeedInstitutionAsync("os7");
+        var demoted = await SeedStaffAsync(institution.Id, "13933300007", StaffRole.Admin);
+        var peer = await SeedStaffAsync(institution.Id, "13933300107", StaffRole.Admin);
+        var staleClient = await LoginStaffClientAsync("13933300007");
+
+        // 模拟"刚被另一名管理员降级"：直接改库，令牌尚未过期（仍带 role=Admin）。
+        await MutateStaffRowAsync(demoted.Id, s => s.Role = StaffRole.Sales);
+
+        // 自晋升 → 403，数据库纹丝不动（令牌的 role claim 说了不算）。
+        var repromote = await staleClient.PutAsJsonAsync(
+            $"/api/org/staff/{demoted.Id}", new { role = "Admin" });
+        Assert.Equal(HttpStatusCode.Forbidden, repromote.StatusCode);
+        var problem = await ProblemDetailAsync(repromote);
+        Assert.Contains("角色", problem.GetProperty("detail").GetString());
+        Assert.Equal(StaffRole.Sales, (await GetStaffRowAsync(demoted.Id)).Role);
+
+        // 对他人的角色改写同样被拒（守卫在目标查找之前，与目标是谁无关）。
+        var demotePeer = await staleClient.PutAsJsonAsync(
+            $"/api/org/staff/{peer.Id}", new { role = "Sales" });
+        Assert.Equal(HttpStatusCode.Forbidden, demotePeer.StatusCode);
+        Assert.Equal(StaffRole.Admin, (await GetStaffRowAsync(peer.Id)).Role);
+
+        // 被停用的管理员（陈旧令牌的另一形态）同样被拒。
+        var deactivated = await SeedStaffAsync(institution.Id, "13933300207", StaffRole.Admin);
+        var deactivatedClient = await LoginStaffClientAsync("13933300207");
+        await MutateStaffRowAsync(deactivated.Id, s => s.IsActive = false);
+        Assert.Equal(HttpStatusCode.Forbidden, (await deactivatedClient.PutAsJsonAsync(
+            $"/api/org/staff/{demoted.Id}", new { role = "Admin" })).StatusCode);
+        Assert.Equal(StaffRole.Sales, (await GetStaffRowAsync(demoted.Id)).Role);
+
+        // 真正的库内活跃 Admin 不受影响：peer 把被降级者晋升回来 → 204。
+        var peerClient = await LoginStaffClientAsync("13933300107");
+        var promote = await peerClient.PutAsJsonAsync(
+            $"/api/org/staff/{demoted.Id}", new { role = "Admin" });
+        Assert.Equal(HttpStatusCode.NoContent, promote.StatusCode);
+        Assert.Equal(StaffRole.Admin, (await GetStaffRowAsync(demoted.Id)).Role);
+    }
+
+    /// <summary>绕过 HTTP 直接改一个员工行（模拟其他管理员已生效的变更）。</summary>
+    private async Task MutateStaffRowAsync(int staffId, Action<Staff> mutate)
+    {
+        using var scope = factory.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var row = await db.Staff.IgnoreQueryFilters().SingleAsync(s => s.Id == staffId);
+        mutate(row);
+        await db.SaveChangesAsync();
+    }
 }
