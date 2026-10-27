@@ -121,6 +121,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ICurrentUser c
         modelBuilder.Entity<SessionPack>()
             .HasIndex(sp => new { sp.StudentId, sp.ProductId, sp.Status });
 
+        // 订单确认只产出一个课时包：唯一索引是并发双确认的数据库兜底
+        // （与 OrderService 的 CAS 状态翻转配合，把竞态从"静默双包"
+        // 变成唯一的 DbUpdateException → 409）。
+        modelBuilder.Entity<SessionPack>()
+            .HasIndex(sp => sp.OrderId)
+            .IsUnique();
+
         modelBuilder.Entity<Consumption>()
             .HasIndex(c => new { c.InstitutionId, c.StudentId });
 

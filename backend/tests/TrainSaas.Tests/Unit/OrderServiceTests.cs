@@ -163,6 +163,94 @@ public class OrderServiceTests
     }
 
     [Fact]
+    public async Task Concurrent_confirm_on_same_order_yields_single_pack()
+    {
+        // 两个独立作用域（各自 DbContext/ICurrentUser/OrderService）共享同一条
+        // 内存 SQLite 连接，顺序驱动并发窗口：ctx1/ctx2 都先读到 Pending（ctx2
+        // 的跟踪读取成为它的陈旧快照 = 两个重叠请求的丢失更新窗口），ctx1 抢先
+        // 确认成功后，ctx2 的确认必须败北——不得静默生成第二个 Active 包。
+        var conn = new SqliteConnection("DataSource=:memory:");
+        conn.Open();
+        var options = new DbContextOptionsBuilder<AppDbContext>()
+            .UseSqlite(conn)
+            .Options;
+        var user1 = new FakeCurrentUser
+        {
+            UserType = UserType.Staff, InstitutionId = 1, StaffId = 1,
+            Role = StaffRole.Admin, Phone = "13900000001", Name = "管理员一",
+        };
+        var user2 = new FakeCurrentUser
+        {
+            UserType = UserType.Staff, InstitutionId = 1, StaffId = 2,
+            Role = StaffRole.Admin, Phone = "13900000002", Name = "管理员二",
+        };
+        using var db1 = new AppDbContext(options, user1);
+        db1.Database.EnsureCreated();
+        using var db2 = new AppDbContext(options, user2);
+        var orders1 = new OrderService(db1, user1, _hasher);
+        var orders2 = new OrderService(db2, user2, _hasher);
+
+        var student = new Student { InstitutionId = 1, Name = "学员", Phone = "13844440001", IsActive = true };
+        var product = new Product
+        {
+            InstitutionId = 1, Name = "课程包", Type = ProductType.Flexible,
+            Price = 1200m, SessionCount = 12, IsPublished = false,
+        };
+        db1.Students.Add(student);
+        db1.Products.Add(product);
+        await db1.SaveChangesAsync();
+        var order = await orders1.CreateAsync(
+            new CreateOrderRequest(student.Id, product.Id, 1000m, null, null));
+
+        // 两个作用域的请求前读都看到 Pending（ctx2 为跟踪读取 → 陈旧快照）。
+        Assert.Equal(OrderStatus.Pending,
+            (await db1.Orders.AsNoTracking().SingleAsync(o => o.Id == order.Id)).Status);
+        Assert.Equal(OrderStatus.Pending,
+            (await db2.Orders.SingleAsync(o => o.Id == order.Id)).Status);
+
+        // ctx1 赢得确认。
+        await orders1.ConfirmAsync(order.Id, staffId: 1);
+
+        // ctx2 持陈旧快照重放确认：必须 409，且不得再插入课时包。
+        var ex = await Assert.ThrowsAsync<ConflictException>(
+            () => orders2.ConfirmAsync(order.Id, staffId: 2));
+        Assert.Equal("订单已处理", ex.Message);
+
+        // 最终一致：订单 Active、恰好一个课时包、恰好一个家长账号。
+        Assert.Equal(OrderStatus.Active,
+            (await db1.Orders.AsNoTracking().SingleAsync(o => o.Id == order.Id)).Status);
+        Assert.Equal(1, await db1.SessionPacks.AsNoTracking()
+            .CountAsync(sp => sp.OrderId == order.Id));
+        Assert.Equal(1, await db1.ParentAccounts.AsNoTracking()
+            .CountAsync(p => p.Phone == student.Phone));
+    }
+
+    [Fact]
+    public async Task SessionPack_order_id_unique_index_rejects_second_pack()
+    {
+        // R10 数据库兜底：即使绕过服务直插，SessionPacks.OrderId 唯一索引
+        // 也拒绝同一订单的第二个课时包（把竞态变成 DbUpdateException，
+        // ConfirmAsync 将其转为 409 而非静默双包）。
+        var (db, orders, conn) = CreateOrders();
+        var student = await SeedStudentAsync(db, "13855550001");
+        var product = await SeedProductAsync(db);
+        var order = await CreatePendingOrderAsync(orders, student, product);
+        await orders.ConfirmAsync(order.Id, staffId: 1);
+
+        db.SessionPacks.Add(new SessionPack
+        {
+            OrderId = order.Id,
+            StudentId = student.Id,
+            ProductId = product.Id,
+            TotalSessions = 1,
+            RemainingSessions = 1,
+            Status = PackStatus.Active,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
+    [Fact]
     public async Task Void_without_reason_throws_BusinessRule()
     {
         var (db, orders, conn) = CreateOrders();

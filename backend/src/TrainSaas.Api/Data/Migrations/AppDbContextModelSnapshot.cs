@@ -446,6 +446,9 @@ namespace TrainSaas.Api.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("OrderId")
+                        .IsUnique();
+
                     b.HasIndex("StudentId", "ProductId", "Status");
 
                     b.ToTable("SessionPacks");
