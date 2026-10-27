@@ -34,6 +34,8 @@ builder.Services.AddScoped<InstitutionProvisioningService>();
 builder.Services.AddScoped<StaffService>();
 builder.Services.AddScoped<ProductService>();
 builder.Services.AddScoped<StudentService>();
+builder.Services.AddScoped<ClassTemplateService>();
+builder.Services.AddScoped<SessionGenerationService>();
 builder.Services.AddScoped<OrderService>();
 builder.Services.AddScoped<IntentService>();
 builder.Services.AddScoped<FileStorageService>();
