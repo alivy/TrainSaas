@@ -22,6 +22,8 @@ namespace TrainSaas.Api.Services;
 /// roster 直接查 ClassEnrollments（仅 Enrolled）关联学员；attendance 为既有
 /// 点名行（写入口是 Task 13）。</item>
 /// <item>全部 DateTime 为服务器本地时间（Global Constraints，不做 UTC 换算）。</item>
+/// <item>并发（R11）：唯一索引 (TemplateId,StartAt) 是数据库兜底；输家的
+/// DbUpdateException 被捕获并按最新库态单次重试收敛，无异常逃逸。</item>
 /// </list>
 /// </summary>
 public class SessionGenerationService(AppDbContext db)
@@ -32,11 +34,39 @@ public class SessionGenerationService(AppDbContext db)
     /// <summary>
     /// 确保窗口内的课次存在（幂等）。调用方（会话查询）负责把跨度限制在
     /// 60 天内；本方法再钳制生成窗口到 28 天，避免一次请求生成过多行。
+    /// 并发安全（R11）：两个请求同时首化同一窗口时，唯一索引
+    /// (TemplateId,StartAt) 把输家的插入变成 DbUpdateException——捕获后按
+    /// 最新库态重算缺口补一轮（单次重试），与赢家收敛到同一终态，无异常逃逸。
     /// </summary>
     public async Task EnsureSessionsAsync(DateTime from, DateTime to)
     {
         var effectiveTo = to < from.AddDays(GenerationWindowDays) ? to : from.AddDays(GenerationWindowDays);
 
+        if (!await AddMissingSessionsAsync(from, effectiveTo))
+        {
+            return;
+        }
+
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // 并发赢家已抢先提交了相同 (TemplateId,StartAt)（事务已回滚）：
+            // 丢弃本批冲突实体，按最新库态重算仍缺失的实例再插一轮。
+            db.ChangeTracker.Clear();
+            await AddMissingSessionsAsync(from, effectiveTo);
+            await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// 把窗口内仍缺失的课次加入变更跟踪器（不落库）。返回是否加入了任何
+    /// 实体；已存在 (TemplateId,StartAt) 的键（含本批内重复）一律跳过。
+    /// </summary>
+    private async Task<bool> AddMissingSessionsAsync(DateTime from, DateTime effectiveTo)
+    {
         var templates = await db.ClassTemplates.AsNoTracking()
             .Where(t => t.IsActive)
             .ToListAsync();
@@ -88,10 +118,7 @@ public class SessionGenerationService(AppDbContext db)
             }
         }
 
-        if (added)
-        {
-            await db.SaveChangesAsync();
-        }
+        return added;
     }
 
     /// <summary>

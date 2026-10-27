@@ -131,8 +131,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ICurrentUser c
         modelBuilder.Entity<Consumption>()
             .HasIndex(c => new { c.InstitutionId, c.StudentId });
 
+        // (TemplateId, StartAt) 唯一索引是惰性生成的并发兜底：两个请求同时
+        // 首化同一窗口时，输家的插入被变成 DbUpdateException，由
+        // SessionGenerationService 捕获后重查收敛（而非静默重复课次）。
         modelBuilder.Entity<ClassSession>()
-            .HasIndex(cs => new { cs.TemplateId, cs.StartAt });
+            .HasIndex(cs => new { cs.TemplateId, cs.StartAt })
+            .IsUnique();
 
         modelBuilder.Entity<ClassSession>()
             .HasIndex(cs => new { cs.TeacherId, cs.StartAt });

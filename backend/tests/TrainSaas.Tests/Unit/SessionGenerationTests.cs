@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
 using TrainSaas.Api.Domain;
@@ -18,6 +19,8 @@ namespace TrainSaas.Tests.Unit;
 /// <item>跨年：日期迭代基于本地日期，12 月到 1 月自然跨越（Review Focus 5）；</item>
 /// <item>停用模板不生成；生成的课次携带模板教师、Status=Scheduled、
 /// 归属机构由 SaveChanges 按员工令牌自动填充。</item>
+/// <item>R11 并发：两个请求同时首化同一窗口时，(TemplateId,StartAt) 唯一
+/// 索引兜底 + DbUpdateException 捕获收敛，无重复行、无异常逃逸。</item>
 /// </list>
 /// </summary>
 public class SessionGenerationTests
@@ -199,5 +202,154 @@ public class SessionGenerationTests
         Assert.All(rows, cs => Assert.Equal(1, cs.InstitutionId));
         // ……机构 2 的周三模板一节都不生成。
         Assert.DoesNotContain(rows, cs => cs.TemplateId == awayTemplate.Id);
+    }
+
+    /// <summary>
+    /// 并发竞态的确定化重放（R11）：挂在"输家"上下文的 SaveChanges 上，在其
+    /// 真正提交之前让"赢家"完整跑完同一窗口的生成——即两个请求都完成了
+    /// preload、赢家先提交的竞态窗口。只拦第一次 SaveChanges（恢复重试的
+    /// 提交不再注入赢家）。HookFired 防止测试因钩子未触发而空转通过。
+    /// </summary>
+    private sealed class WinnerCommitsDuringLoserSave(Func<Task> onSavingChanges)
+        : SaveChangesInterceptor
+    {
+        private Func<Task>? _onSavingChanges = onSavingChanges;
+
+        public bool HookFired { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            var hook = _onSavingChanges;
+            if (hook is not null)
+            {
+                _onSavingChanges = null;
+                HookFired = true;
+                await hook();
+            }
+
+            return await base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    private static void TryDeleteDbFiles(string dbPath)
+    {
+        foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
+        {
+            try
+            {
+                File.Delete(dbPath + suffix);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Concurrent_generation_yields_no_duplicates()
+    {
+        // R11：同一临时文件库、两个独立连接的 AppDbContext 同时惰性生成同一
+        // 窗口。竞态确定化：输家的 SaveChanges 提交前，赢家已按同一窗口完整
+        // 生成并提交。断言：无异常逃逸、恰 4 节课、(TemplateId,StartAt) 无重复。
+        var dbPath = Path.Combine(Path.GetTempPath(), $"trainsaas-gen-{Guid.NewGuid():N}.db");
+        var dataSource = $"DataSource={dbPath}";
+        var user1 = new FakeCurrentUser
+        {
+            UserType = UserType.Staff, InstitutionId = 1, StaffId = 1,
+            Role = StaffRole.Admin, Phone = "13900000001", Name = "管理员一",
+        };
+        var user2 = new FakeCurrentUser
+        {
+            UserType = UserType.Staff, InstitutionId = 1, StaffId = 2,
+            Role = StaffRole.Admin, Phone = "13900000002", Name = "管理员二",
+        };
+        try
+        {
+            var winnerOptions = new DbContextOptionsBuilder<AppDbContext>()
+                .UseSqlite(dataSource).Options;
+            using (var seed = new AppDbContext(winnerOptions, user1))
+            {
+                seed.Database.EnsureCreated();
+                seed.ClassTemplates.Add(new ClassTemplate
+                {
+                    InstitutionId = 1,
+                    ProductId = 1,
+                    DayOfWeek = DayOfWeek.Tuesday,
+                    StartTime = new TimeOnly(18, 0),
+                    EndTime = new TimeOnly(19, 30),
+                    TeacherId = 9,
+                    IsActive = true,
+                });
+                await seed.SaveChangesAsync();
+            }
+
+            var from = new DateTime(2026, 11, 2);
+            var to = new DateTime(2026, 11, 30);
+            using var winnerDb = new AppDbContext(winnerOptions, user1);
+            var winner = new SessionGenerationService(winnerDb);
+
+            var interceptor = new WinnerCommitsDuringLoserSave(
+                () => winner.EnsureSessionsAsync(from, to));
+            using var loserDb = new AppDbContext(
+                new DbContextOptionsBuilder<AppDbContext>()
+                    .UseSqlite(dataSource)
+                    .AddInterceptors(interceptor)
+                    .Options,
+                user2);
+            var loser = new SessionGenerationService(loserDb);
+
+            // 输家的整窗生成（含与赢家的唯一索引冲突及恢复）不得有异常逃逸。
+            await loser.EnsureSessionsAsync(from, to);
+
+            // 钩子确实触发过（否则测试没有走到竞态窗口）。
+            Assert.True(interceptor.HookFired);
+
+            // 终态一致：恰好 4 节周二课，无重复键。
+            var rows = await winnerDb.ClassSessions.AsNoTracking()
+                .IgnoreQueryFilters().ToListAsync();
+            Assert.Equal(4, rows.Count);
+            Assert.Equal(4, rows.Select(cs => (cs.TemplateId, cs.StartAt)).Distinct().Count());
+        }
+        finally
+        {
+            TryDeleteDbFiles(dbPath);
+        }
+    }
+
+    [Fact]
+    public async Task ClassSession_template_and_start_unique_index_rejects_duplicate()
+    {
+        // R11 数据库兜底：即使绕过服务直插，(TemplateId,StartAt) 唯一索引也
+        // 拒绝同一课次的第二行（把并发竞态变成 DbUpdateException，由
+        // EnsureSessionsAsync 捕获后收敛，而非静默重复课次）。
+        var (db, sessions, conn) = CreateSessions();
+        var teacher = await SeedTeacherAsync(db);
+        var template = await SeedTemplateAsync(
+            db, teacher.Id, DayOfWeek.Tuesday, new TimeOnly(18, 0), new TimeOnly(19, 30));
+
+        db.ClassSessions.Add(new ClassSession
+        {
+            TemplateId = template.Id,
+            TeacherId = teacher.Id,
+            StartAt = new DateTime(2026, 11, 3, 18, 0, 0),
+            EndAt = new DateTime(2026, 11, 3, 19, 30, 0),
+            Status = SessionStatus.Scheduled,
+        });
+        db.ClassSessions.Add(new ClassSession
+        {
+            TemplateId = template.Id,
+            TeacherId = teacher.Id,
+            StartAt = new DateTime(2026, 11, 3, 18, 0, 0),
+            EndAt = new DateTime(2026, 11, 3, 19, 30, 0),
+            Status = SessionStatus.Scheduled,
+        });
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
     }
 }

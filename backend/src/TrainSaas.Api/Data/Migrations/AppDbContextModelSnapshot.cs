@@ -106,7 +106,8 @@ namespace TrainSaas.Api.Data.Migrations
 
                     b.HasIndex("TeacherId", "StartAt");
 
-                    b.HasIndex("TemplateId", "StartAt");
+                    b.HasIndex("TemplateId", "StartAt")
+                        .IsUnique();
 
                     b.ToTable("ClassSessions");
                 });
