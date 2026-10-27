@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
@@ -36,6 +37,19 @@ app.MapGet("/healthz", () => "ok");
 // (SeedDemoData=true, e.g. in the Development environment).
 using (var scope = app.Services.CreateScope())
 {
+    // SQLite creates the database file but not its parent directory, so make
+    // sure the directory of the configured data source (data/ for the default
+    // "Data Source=data/trainsaas.db") exists before migrating.
+    var dataSource = new SqliteConnectionStringBuilder(app.Configuration.GetConnectionString("Default")).DataSource;
+    if (!string.IsNullOrWhiteSpace(dataSource) && dataSource != ":memory:")
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(dataSource));
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+    }
+
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
     if (app.Configuration.GetValue<bool>("SeedDemoData"))
