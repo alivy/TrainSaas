@@ -2,8 +2,9 @@ namespace TrainSaas.Api.Dtos;
 
 /// <summary>
 /// POST /api/org/consumptions/walk-in {studentId, sessionPackId}：到店核销。
-/// 包须属于该学员、Active、有余量；实际扣减按包的 ProductId 走
-/// IDeductionService（同产品最早先扣），流水行不带课次 id。
+/// 包须属于该学员、Active、有余量；实际扣减对所选包走
+/// IDeductionService.DeductFromPackAsync（R14：扣的就是所选包，同款 CAS
+/// 防负），流水行不带课次 id。
 /// </summary>
 public record WalkInRequest(int StudentId, int SessionPackId);
 

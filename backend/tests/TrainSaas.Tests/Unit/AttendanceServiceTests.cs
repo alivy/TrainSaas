@@ -90,6 +90,13 @@ public class AttendanceServiceTests
             await winnerWrites();
             return await inner.DeductAsync(studentId, productId, classSessionId, kind, operatorId, reason);
         }
+
+        // 点名（RollCall）路径绝不走指定包扣减（R14 接口新增成员）：纯委托，
+        // 竞态重放只挂在 DeductAsync 上。
+        public Task<Consumption> DeductFromPackAsync(
+            int sessionPackId, int? classSessionId, ConsumptionKind kind, int operatorId,
+            string? reason = null) =>
+            inner.DeductFromPackAsync(sessionPackId, classSessionId, kind, operatorId, reason);
     }
 
     /// <summary>

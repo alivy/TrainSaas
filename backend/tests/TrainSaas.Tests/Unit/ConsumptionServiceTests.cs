@@ -12,13 +12,15 @@ namespace TrainSaas.Tests.Unit;
 /// ConsumptionService 单元测试（TestDb 内存 SQLite + FakeCurrentUser）——
 /// 到店核销、撤销冲正与流水列表的账务语义：
 /// <list type="bullet">
-/// <item>核销：包属本学员、Active、有余量，走 Task 13 的 DeductAsync
-/// （WalkIn 行必须 ClassSessionId=null——点名修正按课次 LIFO 冲正，带课次
-/// 的 WalkIn 行会被误冲正）；不属于该学员/已作废/课时不足分别 400，
-/// 未知/跨机构学员与包一律 404。</item>
+/// <item>核销：包属本学员、Active、有余量，扣的就是所选包（R14 修正：
+/// DeductFromPackAsync 同款 CAS，不滑到同产品最早的包；WalkIn 行必须
+/// ClassSessionId=null——点名修正按课次 LIFO 冲正，带课次的 WalkIn 行
+/// 会被误冲正）；不属于该学员/已作废/课时不足分别 400，未知/跨机构
+/// 学员与包一律 404。</item>
 /// <item>冲正：append-only——原行一字不动，追加 Direction=-1、Kind=Reversal、
 /// ReversesConsumptionId=原行 的镜像行，包余量 +1 与镜像行同一显式事务；
-/// 作废包也恢复计数、状态不变；双重撤销 409；reason 必填、trim、≤200；
+/// 作废包也恢复计数、状态不变；权限先于 409（R14：无权者一律 403，
+/// 不泄露冲正状态）；双重撤销 409；reason 必填、trim、≤200；
 /// 权限 Admin 任意，或本人操作且当天（跨天 403，Review Focus 5）。</item>
 /// <item>列表角色范围：Admin/FrontDesk 全机构；Sales 仅名下学员；Teacher 仅
 /// 本人操作或本人授课课次的行。日期窗 from 含当日零点、to 排他次日零点。</item>
@@ -86,6 +88,7 @@ public class ConsumptionServiceTests
         int orderId,
         int remainingSessions,
         PackStatus status = PackStatus.Active,
+        DateTime? createdAt = null,
         int institutionId = 1)
     {
         var pack = new SessionPack
@@ -97,6 +100,7 @@ public class ConsumptionServiceTests
             TotalSessions = Math.Max(remainingSessions, 1),
             RemainingSessions = remainingSessions,
             Status = status,
+            CreatedAt = createdAt ?? DateTime.Now,
         };
         db.SessionPacks.Add(pack);
         await db.SaveChangesAsync();
@@ -203,6 +207,38 @@ public class ConsumptionServiceTests
         Assert.Null(row.ReversesConsumptionId);
         Assert.Equal(1, row.InstitutionId);
         // 恰落一行流水。
+        Assert.Single(await db.Consumptions.AsNoTracking().ToListAsync());
+    }
+
+    /// <summary>
+    /// R14 修正：核销扣的就是所选包——即便同产品存在更早购买的可用包，
+    /// 也绝不滑到最早优先（DeductFromPackAsync 对指定包 CAS）；响应
+    /// remainingSessions 即所选包扣后真值。
+    /// </summary>
+    [Fact]
+    public async Task Walkin_deducts_selected_newer_pack_not_earliest()
+    {
+        var frontDesk = StaffUser(3, StaffRole.FrontDesk, "前台甲");
+        var (db, service, conn) = Create(frontDesk);
+        var student = await SeedStudentAsync(db, "学员寅", "13811113020");
+        var product = await SeedProductAsync(db, "少儿课时包");
+        var early = await SeedPackAsync(db, student.Id, product.Id, 920, 5,
+            createdAt: new DateTime(2026, 10, 1, 10, 0, 0));
+        var later = await SeedPackAsync(db, student.Id, product.Id, 921, 3,
+            createdAt: new DateTime(2026, 10, 10, 10, 0, 0));
+
+        var result = await service.WalkInAsync(student.Id, later.Id, frontDesk);
+
+        // 扣的是所选的较新包：较新包 -1、较早包纹丝不动。
+        Assert.Equal(2, await RemainingAsync(db, later.Id));
+        Assert.Equal(5, await RemainingAsync(db, early.Id));
+        var row = await db.Consumptions.AsNoTracking().SingleAsync(c => c.Id == result.Id);
+        Assert.Equal(later.Id, row.SessionPackId);
+        Assert.Equal(student.Id, row.StudentId);
+        Assert.Equal(ConsumptionKind.WalkIn, row.Kind);
+        Assert.Null(row.ClassSessionId);
+        // 响应余量即所选包扣后真值。
+        Assert.Equal(2, result.RemainingSessions);
         Assert.Single(await db.Consumptions.AsNoTracking().ToListAsync());
     }
 
@@ -350,6 +386,12 @@ public class ConsumptionServiceTests
         Assert.Equal(4, await RemainingAsync(db, pack.Id));
         Assert.Single(await db.Consumptions.AsNoTracking()
             .Where(c => c.ReversesConsumptionId == original.Id).ToListAsync());
+
+        // R14 守卫顺序：权限先于 409——非本人非 Admin 对已冲正流水一律
+        // 403，不泄露该流水的冲正状态。
+        var outsider = StaffUser(6, StaffRole.Sales, "销售乙");
+        await Assert.ThrowsAsync<ForbiddenActionException>(
+            () => service.ReverseAsync(original.Id, "越权探测", outsider));
 
         // 未知/跨机构 id → 404，不泄露存在性。
         var notFound = await Assert.ThrowsAsync<NotFoundException>(

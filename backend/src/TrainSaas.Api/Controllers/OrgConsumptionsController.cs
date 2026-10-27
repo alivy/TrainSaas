@@ -27,8 +27,8 @@ public class OrgConsumptionsController(
     /// <summary>
     /// POST /api/org/consumptions/walk-in {studentId, sessionPackId} →
     /// 200 {id, remainingSessions}（核销后该包余量）。包须属于该学员
-    /// （400）、Active（400）、有余量（400）；按包的 ProductId 走标准
-    /// 扣减（同产品最早先扣），流水行不带课次 id。
+    /// （400）、Active（400）、有余量（400）；扣的就是所选包（R14，
+    /// DeductFromPackAsync），流水行不带课次 id。
     /// </summary>
     [HttpPost("walk-in")]
     [Authorize(Policy = AuthPolicies.AdminOrFrontDesk)]
@@ -54,8 +54,8 @@ public class OrgConsumptionsController(
 
     /// <summary>
     /// POST /api/org/consumptions/{id}/reverse {reason} → 201 {id}（镜像行）。
-    /// reason 必填、trim 后 ≤200 字（400）；目标须 Direction=+1（400）；
-    /// 已撤销 409；Admin 任意，或本人操作且当天（否则 403）。
+    /// 权限先行（R14）：Admin 任意，或本人操作且当天（否则 403）；目标须
+    /// Direction=+1（400）；reason 必填、trim 后 ≤200 字（400）；已撤销 409。
     /// </summary>
     [HttpPost("{id}/reverse")]
     public async Task<ActionResult<ReverseResult>> Reverse(int id, ReverseRequest request)

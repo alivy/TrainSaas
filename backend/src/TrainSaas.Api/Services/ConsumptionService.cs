@@ -13,14 +13,16 @@ namespace TrainSaas.Api.Services;
 ///
 /// 核销守卫顺序：学员（租户过滤器内，未知/跨机构 404）→ 包（404）→
 /// 包属该学员（400 "课时包不属于该学员"）→ Active（400 "课时包已作废"）→
-/// 有余量（400 "课时不足"）；实际扣减按包的 ProductId 走
-/// <see cref="IDeductionService.DeductAsync"/>（同产品最早先扣、CAS 防负），
-/// classSessionId 恒为 null——点名修正按 (student, session) LIFO 冲正，
-/// 带课次 id 的 WalkIn 行会被误冲正（Task 13 账本协同裁定）。
+/// 有余量（400 "课时不足"）；实际扣减对所选包走
+/// <see cref="IDeductionService.DeductFromPackAsync"/>（R14 修正：扣的就是
+/// 所选包、同款 CAS 防负，绝不滑到同产品最早的包），classSessionId 恒为
+/// null——点名修正按 (student, session) LIFO 冲正，带课次 id 的 WalkIn 行
+/// 会被误冲正（Task 13 账本协同裁定）。
 ///
-/// 冲正（R13 加固）：目标须 Direction=+1（400）；reason 必填、trim、≤200
-/// （400）；已存在 ReversesConsumptionId==目标 的行 → 409；权限 Admin 任意，
-/// 或本人操作且当天（CreatedAt.Date==DateTime.Today，跨天 403）。包余量 +1
+/// 冲正（R13 加固，R14 守卫顺序）：权限先行（Admin 任意，或本人操作且
+/// 当天 CreatedAt.Date==DateTime.Today，否则 403——无权者一律 403，不泄露
+/// 冲正状态）→ 目标须 Direction=+1（400）→ reason 必填、trim、≤200
+/// （400）→ 已存在 ReversesConsumptionId==目标 的行（409）。包余量 +1
 /// 走 CAS 式 ExecuteUpdate（作废包也恢复计数、状态不变），与镜像行同一显式
 /// 事务提交；ReversesConsumptionId 唯一索引是并发双撤销的数据库兜底——
 /// 输家的 DbUpdateException 被捕获、回滚后重查，确系已撤销收敛为 409
@@ -37,8 +39,8 @@ public class ConsumptionService(AppDbContext db, IDeductionService deduction)
     private const int MaxReasonLength = 200;
 
     /// <summary>
-    /// POST /api/org/consumptions/walk-in：到店核销。校验选中的包后按其
-    /// ProductId 走标准扣减（同产品最早先扣），返回新流水 id 与核销后该包
+    /// POST /api/org/consumptions/walk-in：到店核销。校验选中的包后对该包
+    /// 做 CAS 扣减（R14：扣的就是所选包），返回新流水 id 与核销后该包
     /// 余量。流水行 Kind=WalkIn、ClassSessionId=null、操作人=调用者。
     /// </summary>
     public async Task<WalkInResult> WalkInAsync(int studentId, int sessionPackId, ICurrentUser caller)
@@ -67,12 +69,13 @@ public class ConsumptionService(AppDbContext db, IDeductionService deduction)
             throw new BusinessRuleException("课时不足");
         }
 
-        // 扣减复用 Task 13 账本心脏：同产品最早先扣、CAS 防负、同事务落
-        // +1 流水。WalkIn 行必须不带课次 id（见类注释）。
-        var consumption = await deduction.DeductAsync(
-            studentId, pack.ProductId, classSessionId: null, ConsumptionKind.WalkIn, operatorId);
+        // 扣减对所选包（R14 修正）：同款 CAS 防负、同事务落 +1 流水；
+        // 校验与 CAS 之间的并发窗口（被抢空/作废）收敛为
+        // NoAvailablePackException（400）。WalkIn 行必须不带课次 id（见类注释）。
+        var consumption = await deduction.DeductFromPackAsync(
+            sessionPackId, classSessionId: null, ConsumptionKind.WalkIn, operatorId);
 
-        // 核销后该包余量（DeductAsync 扣的可能是同产品更早的包）。
+        // 核销后该包（即所选包）余量真值。
         var remaining = await db.SessionPacks.AsNoTracking()
             .Where(p => p.Id == sessionPackId)
             .Select(p => p.RemainingSessions)
@@ -181,9 +184,10 @@ public class ConsumptionService(AppDbContext db, IDeductionService deduction)
 
     /// <summary>
     /// POST /api/org/consumptions/{id}/reverse：撤销冲正（append-only）。
-    /// 守卫顺序：目标（租户过滤器内 404）→ 只能撤销扣减流水（400）→
-    /// reason（400）→ 已撤销（409）→ 权限（403）。包余量 +1 与镜像行同一
-    /// 显式事务；唯一索引兜底并发双撤销（见类注释）。
+    /// 守卫顺序（R14）：目标（租户过滤器内 404）→ 权限（403，先于一切
+    /// 状态检查，无权者不泄露冲正状态）→ 只能撤销扣减流水（400）→
+    /// reason（400）→ 已撤销（409）。包余量 +1 与镜像行同一显式事务；
+    /// 唯一索引兜底并发双撤销（见类注释）。
     /// </summary>
     public async Task<Consumption> ReverseAsync(int consumptionId, string? reason, ICurrentUser caller)
     {
@@ -191,6 +195,15 @@ public class ConsumptionService(AppDbContext db, IDeductionService deduction)
         var target = await db.Consumptions.AsNoTracking()
             .SingleOrDefaultAsync(c => c.Id == consumptionId)
             ?? throw new NotFoundException("流水不存在");
+
+        // 权限先行（R14）：Admin 任意，或本人操作且当天；无权者一律 403，
+        // 绝不先吐 400/409 泄露该流水的方向/冲正状态。
+        var operatorId = RequireStaffId(caller);
+        if (caller.Role != StaffRole.Admin
+            && (target.OperatorId != operatorId || target.CreatedAt.Date != DateTime.Today))
+        {
+            throw new ForbiddenActionException("只有管理员或当日操作人本人可以撤销");
+        }
 
         if (target.Direction != 1)
         {
@@ -203,13 +216,6 @@ public class ConsumptionService(AppDbContext db, IDeductionService deduction)
                 .AnyAsync(r => r.ReversesConsumptionId == consumptionId))
         {
             throw new ConflictException("该流水已撤销");
-        }
-
-        var operatorId = RequireStaffId(caller);
-        if (caller.Role != StaffRole.Admin
-            && (target.OperatorId != operatorId || target.CreatedAt.Date != DateTime.Today))
-        {
-            throw new ForbiddenActionException("只有管理员或当日操作人本人可以撤销");
         }
 
         // 包回补与镜像行同一显式事务：要么都提交，要么都不提交。回补走
