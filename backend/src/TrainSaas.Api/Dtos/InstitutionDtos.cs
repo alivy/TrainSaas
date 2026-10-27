@@ -29,3 +29,27 @@ public record InstitutionListItem(
 
 /// <summary>PUT /api/platform/institutions/{id}——仅更新非 null 字段。</summary>
 public record UpdateInstitutionRequest(string? Name, string? IntroText, string? ContactPhone, string? Address);
+
+/// <summary>
+/// GET /api/org/profile [StaffOnly] → {code,name,logoPath,introText,contactPhone,
+/// address}：机构自己读自己的介绍页内容（code 只读，改编码是平台侧的事）。
+/// </summary>
+public record OrgProfileResponse(
+    string Code,
+    string Name,
+    string? LogoPath,
+    string? IntroText,
+    string? ContactPhone,
+    string? Address);
+
+/// <summary>
+/// PUT /api/org/profile [AdminOnly]——仅更新请求中非 null 的字段；name 若提供
+/// 则必填非空且 ≤50 字（否则 400）。改动立刻反映在匿名公开页
+/// GET /api/public/orgs/{code} 上。
+/// </summary>
+public record UpdateOrgProfileRequest(
+    string? Name,
+    string? LogoPath,
+    string? IntroText,
+    string? ContactPhone,
+    string? Address);

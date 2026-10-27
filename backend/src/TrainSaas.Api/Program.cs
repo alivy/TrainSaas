@@ -42,6 +42,8 @@ builder.Services.AddScoped<AttendanceService>();
 builder.Services.AddScoped<ConsumptionService>();
 builder.Services.AddScoped<OrderService>();
 builder.Services.AddScoped<IntentService>();
+builder.Services.AddScoped<ReportService>();
+builder.Services.AddScoped<ParentService>();
 builder.Services.AddScoped<FileStorageService>();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")));
