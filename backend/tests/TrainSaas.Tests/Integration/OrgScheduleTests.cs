@@ -24,9 +24,17 @@ namespace TrainSaas.Tests.Integration;
 /// </summary>
 public class OrgScheduleTests(ApiFactory factory) : IClassFixture<ApiFactory>
 {
-    /// <summary>模板响应（201 与列表项）的精确字段集。</summary>
+    /// <summary>模板响应（201）的精确字段集。</summary>
     private static readonly string[] TemplateKeys =
         ["capacity", "dayOfWeek", "endTime", "id", "isActive", "productId", "room", "startTime", "teacherId"];
+
+    /// <summary>
+    /// 模板列表项的精确字段集（Task 12 起新增 productName/teacherName/
+    /// enrolledCount——列表带在读时解析的名称与在班数）。
+    /// </summary>
+    private static readonly string[] TemplateListKeys =
+        ["capacity", "dayOfWeek", "endTime", "enrolledCount", "id", "isActive", "productId",
+            "productName", "room", "startTime", "teacherId", "teacherName"];
 
     /// <summary>课次列表项的精确字段集。</summary>
     private static readonly string[] SessionKeys =
@@ -585,13 +593,19 @@ public class OrgScheduleTests(ApiFactory factory) : IClassFixture<ApiFactory>
             paged.EnumerateObject().Select(p => p.Name).OrderBy(n => n));
         Assert.Equal(1, paged.GetProperty("total").GetInt32());
         var listItem = paged.GetProperty("items").EnumerateArray().Single();
-        Assert.Equal(TemplateKeys, listItem.EnumerateObject().Select(p => p.Name).OrderBy(n => n));
+        Assert.Equal(TemplateListKeys, listItem.EnumerateObject().Select(p => p.Name).OrderBy(n => n));
         Assert.Equal(templateId, listItem.GetProperty("id").GetInt32());
         Assert.Equal(2, listItem.GetProperty("dayOfWeek").GetInt32());
         Assert.Equal("19:00:00", listItem.GetProperty("startTime").GetString());
         Assert.Equal("20:30:00", listItem.GetProperty("endTime").GetString());
         Assert.Equal(teacher2.Id, listItem.GetProperty("teacherId").GetInt32());
         Assert.Equal(15, listItem.GetProperty("capacity").GetInt32());
+        // Task 12：列表项带读时解析的 productName/teacherName 与在班数
+        //（本测试无报名 → 0）。
+        Assert.Equal(product.Id, listItem.GetProperty("productId").GetInt32());
+        Assert.Equal("固定班课包", listItem.GetProperty("productName").GetString());
+        Assert.Equal(teacher2.Name, listItem.GetProperty("teacherName").GetString());
+        Assert.Equal(0, listItem.GetProperty("enrolledCount").GetInt32());
 
         var otherProduct = await client.GetAsync("/api/org/templates?productId=999999");
         var otherPaged = await otherProduct.Content.ReadFromJsonAsync<JsonElement>();

@@ -30,8 +30,9 @@ public record UpdateTemplateRequest(
     int? Capacity);
 
 /// <summary>
-/// 模板 201 响应与列表项：
-/// {id,productId,dayOfWeek,startTime,endTime,teacherId,room,capacity,isActive}。
+/// 模板 201 响应：{id,productId,dayOfWeek,startTime,endTime,teacherId,room,
+/// capacity,isActive}（与创建请求同字段回显；列表项见
+/// <see cref="TemplateListItem"/>）。
 /// </summary>
 public record TemplateResponse(
     int Id,
@@ -43,6 +44,48 @@ public record TemplateResponse(
     string? Room,
     int? Capacity,
     bool IsActive);
+
+/// <summary>
+/// GET /api/org/templates 列表项：
+/// {id,productId,productName,dayOfWeek,startTime,endTime,teacherId,
+/// teacherName,room,capacity,isActive,enrolledCount}。productName/
+/// teacherName 读时解析（跨表名称）；enrolledCount 为该模板在班
+/// （Enrolled）学员数，不含退班历史行。
+/// </summary>
+public record TemplateListItem(
+    int Id,
+    int ProductId,
+    string? ProductName,
+    int DayOfWeek,
+    TimeOnly StartTime,
+    TimeOnly EndTime,
+    int TeacherId,
+    string? TeacherName,
+    string? Room,
+    int? Capacity,
+    bool IsActive,
+    int EnrolledCount);
+
+/// <summary>POST /api/org/templates/{id}/enrollments 请求体：{studentId}。</summary>
+public record EnrollRequest(int StudentId);
+
+/// <summary>
+/// POST /api/org/templates/{id}/enrollments 的 201 响应：{id}——报名行 id
+/// （曾退班后重报复用同一行，故两次成功的 id 相同）。
+/// </summary>
+public record EnrollmentCreatedResponse(int Id);
+
+/// <summary>
+/// GET /api/org/templates/{id}/enrollments（班级名册）项：
+/// {studentId,name,phone,status,enrolledAt}。仅 Enrolled 行（退班是历史，
+/// 名册是当前班），按 studentId 升序。
+/// </summary>
+public record RosterItem(
+    int StudentId,
+    string Name,
+    string Phone,
+    string Status,
+    DateTime EnrolledAt);
 
 /// <summary>
 /// GET /api/org/sessions 列表项：

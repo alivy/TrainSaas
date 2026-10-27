@@ -75,6 +75,9 @@ namespace TrainSaas.Api.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("TemplateId", "StudentId")
+                        .IsUnique();
+
                     b.ToTable("ClassEnrollments");
                 });
 

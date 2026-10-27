@@ -141,6 +141,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ICurrentUser c
         modelBuilder.Entity<ClassSession>()
             .HasIndex(cs => new { cs.TeacherId, cs.StartAt });
 
+        // 报名行复用语义：同一 (TemplateId,StudentId) 至多一行（曾退班后
+        // 重报复用原行翻回 Enrolled，服务层保证），唯一索引是并发双报的
+        // 数据库兜底：输家的插入被变成 DbUpdateException，由
+        // EnrollmentService 捕获重读后收敛为 409，而非静默双行。
+        modelBuilder.Entity<ClassEnrollment>()
+            .HasIndex(e => new { e.TemplateId, e.StudentId })
+            .IsUnique();
+
         modelBuilder.Entity<Order>()
             .HasMany(o => o.Vouchers)
             .WithOne()

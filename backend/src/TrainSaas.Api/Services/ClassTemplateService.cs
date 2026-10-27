@@ -28,9 +28,11 @@ public class ClassTemplateService(AppDbContext db)
 
     /// <summary>
     /// GET /api/org/templates?productId 的数据源：本机构（租户过滤器）内按
-    /// Id 升序分页；productId 可选。
+    /// Id 升序分页；productId 可选。列表项含读时解析的 productName/
+    /// teacherName 与在班（Enrolled）学员数 enrolledCount（Task 12；退班的
+    /// 历史行不计入）。
     /// </summary>
-    public async Task<Paged<TemplateResponse>> ListAsync(int? productId, int? page, int? pageSize)
+    public async Task<Paged<TemplateListItem>> ListAsync(int? productId, int? page, int? pageSize)
     {
         var query = db.ClassTemplates.AsNoTracking();
         if (productId is not null)
@@ -46,7 +48,47 @@ public class ClassTemplateService(AppDbContext db)
             .Take(pageSizeValue)
             .ToListAsync();
 
-        return new Paged<TemplateResponse>(total, templates.Select(ToResponse).ToList());
+        var items = new List<TemplateListItem>();
+        if (templates.Count > 0)
+        {
+            var productIds = templates.Select(t => t.ProductId).Distinct().ToList();
+            var productNames = await db.Products.AsNoTracking()
+                .Where(p => productIds.Contains(p.Id))
+                .ToDictionaryAsync(p => p.Id, p => p.Name);
+
+            var teacherIds = templates.Select(t => t.TeacherId).Distinct().ToList();
+            var teacherNames = await db.Staff.AsNoTracking()
+                .Where(s => teacherIds.Contains(s.Id))
+                .ToDictionaryAsync(s => s.Id, s => s.Name);
+
+            var templateIds = templates.Select(t => t.Id).ToList();
+            var enrolledCounts = new Dictionary<int, int>();
+            var counts = await db.ClassEnrollments.AsNoTracking()
+                .Where(e => templateIds.Contains(e.TemplateId) && e.Status == EnrollmentStatus.Enrolled)
+                .GroupBy(e => e.TemplateId)
+                .Select(g => new { TemplateId = g.Key, Count = g.Count() })
+                .ToListAsync();
+            foreach (var row in counts)
+            {
+                enrolledCounts[row.TemplateId] = row.Count;
+            }
+
+            items = templates.Select(t => new TemplateListItem(
+                t.Id,
+                t.ProductId,
+                productNames.GetValueOrDefault(t.ProductId),
+                (int)t.DayOfWeek,
+                t.StartTime,
+                t.EndTime,
+                t.TeacherId,
+                teacherNames.GetValueOrDefault(t.TeacherId),
+                t.Room,
+                t.Capacity,
+                t.IsActive,
+                enrolledCounts.GetValueOrDefault(t.Id))).ToList();
+        }
+
+        return new Paged<TemplateListItem>(total, items);
     }
 
     /// <summary>
@@ -192,8 +234,4 @@ public class ClassTemplateService(AppDbContext db)
             throw new BusinessRuleException("授课教师必须是本机构在职的教师或管理员");
         }
     }
-
-    private static TemplateResponse ToResponse(ClassTemplate template) =>
-        new(template.Id, template.ProductId, (int)template.DayOfWeek, template.StartTime,
-            template.EndTime, template.TeacherId, template.Room, template.Capacity, template.IsActive);
 }
