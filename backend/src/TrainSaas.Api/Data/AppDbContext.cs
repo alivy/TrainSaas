@@ -131,6 +131,15 @@ public class AppDbContext(DbContextOptions<AppDbContext> options, ICurrentUser c
         modelBuilder.Entity<Consumption>()
             .HasIndex(c => new { c.InstitutionId, c.StudentId });
 
+        // 一条扣减流水至多被冲正一次：ReversesConsumptionId 唯一索引是并发
+        // 双撤销的数据库兜底（SQLite 把 NULL 视为互异，多条 NULL 的扣减行
+        // 不受影响）；输家的插入被变成 DbUpdateException，由
+        // ConsumptionService.ReverseAsync 捕获重查后收敛为 409，而非静默
+        // 双回补课时。
+        modelBuilder.Entity<Consumption>()
+            .HasIndex(c => c.ReversesConsumptionId)
+            .IsUnique();
+
         // (TemplateId, StartAt) 唯一索引是惰性生成的并发兜底：两个请求同时
         // 首化同一窗口时，输家的插入被变成 DbUpdateException，由
         // SessionGenerationService 捕获后重查收敛（而非静默重复课次）。

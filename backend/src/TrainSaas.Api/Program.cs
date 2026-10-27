@@ -39,6 +39,7 @@ builder.Services.AddScoped<EnrollmentService>();
 builder.Services.AddScoped<SessionGenerationService>();
 builder.Services.AddScoped<IDeductionService, DeductionService>();
 builder.Services.AddScoped<AttendanceService>();
+builder.Services.AddScoped<ConsumptionService>();
 builder.Services.AddScoped<OrderService>();
 builder.Services.AddScoped<IntentService>();
 builder.Services.AddScoped<FileStorageService>();

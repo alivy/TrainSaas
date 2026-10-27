@@ -191,6 +191,9 @@ namespace TrainSaas.Api.Data.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("ReversesConsumptionId")
+                        .IsUnique();
+
                     b.HasIndex("InstitutionId", "StudentId");
 
                     b.ToTable("Consumptions");
