@@ -34,6 +34,7 @@ builder.Services.AddScoped<InstitutionProvisioningService>();
 builder.Services.AddScoped<StaffService>();
 builder.Services.AddScoped<ProductService>();
 builder.Services.AddScoped<StudentService>();
+builder.Services.AddScoped<IntentService>();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")));
 
@@ -73,8 +74,8 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
     .AllowAnyMethod()));
 
 // Fixed-window "intent" rate-limit policy (5 requests/minute, partitioned per
-// IP, 429 on excess). Not attached to any route yet — Task 8 wires it to the
-// anonymous purchase-intent endpoint.
+// IP, 429 on excess). Attached to the anonymous purchase-intent submission
+// route by PublicOrgsController ([EnableRateLimiting("intent")]).
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
