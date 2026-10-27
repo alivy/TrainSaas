@@ -9,17 +9,21 @@ using TrainSaas.Api.Services;
 namespace TrainSaas.Api.Controllers;
 
 /// <summary>
-/// 课次查询（Task 11，仅查询/详情——点名写入是 Task 13）。[StaffOnly]：
+/// 课次查询（Task 11，仅查询/详情）与点名写入（Task 13）。[StaffOnly]：
 /// Teacher 只见自己授课的课次（详情范围外一律 404，不泄露存在性），
 /// Admin/Sales/FrontDesk 见全机构（租户过滤器已限本机构）。
 /// 列表先按窗口惰性生成（单次最多 28 天），再查询；from/to 为
 /// yyyy-MM-dd 且跨度不得超过 60 天，非法一律 400。
+/// 点名（POST {id}/attendance）的细权限（Admin 或本课次授课教师）在
+/// 服务层裁决，403/404/400 经中间件映射。
 /// </summary>
 [ApiController]
 [Route("api/org/sessions")]
 [Authorize(Policy = AuthPolicies.StaffOnly)]
 public class OrgSessionsController(
-    SessionGenerationService sessionService, ICurrentUser currentUser) : ControllerBase
+    SessionGenerationService sessionService,
+    AttendanceService attendanceService,
+    ICurrentUser currentUser) : ControllerBase
 {
     /// <summary>查询窗口上限：60 天。</summary>
     private const int MaxWindowDays = 60;
@@ -58,6 +62,20 @@ public class OrgSessionsController(
     [HttpGet("{id}")]
     public async Task<ActionResult<SessionDetail>> GetDetail(int id) =>
         Ok(await sessionService.GetSessionDetailAsync(id, currentUser));
+
+    /// <summary>
+    /// POST /api/org/sessions/{id}/attendance {marks:[{studentId,mark}]} →
+    /// 200 {results:[{studentId,ok,error?}]}。mark 为区分大小写的字符串枚举
+    /// Present/Leave/Absent（非法值模型绑定 400）；逐项处理、部分成功；
+    /// Admin 或本课次授课教师可点名（否则 403）；任一项写入后课次转
+    /// Completed。状态机与扣课/冲正见 <see cref="AttendanceService"/>。
+    /// </summary>
+    [HttpPost("{id}/attendance")]
+    public async Task<ActionResult<AttendanceResult>> MarkAttendance(int id, AttendanceRequest request)
+    {
+        var marks = request.Marks?.Select(m => new MarkItem(m.StudentId, m.Mark)).ToList();
+        return Ok(await attendanceService.MarkAsync(id, marks, currentUser));
+    }
 
     /// <summary>
     /// 安全解析日期（严格 yyyy-MM-dd，本地日期）；缺失/非法值 400
