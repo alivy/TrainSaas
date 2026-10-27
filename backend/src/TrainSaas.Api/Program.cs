@@ -141,6 +141,9 @@ using (var scope = app.Services.CreateScope())
     {
         var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasherService>();
         SeedData.SeedMinimalAsync(db, hasher).GetAwaiter().GetResult();
+        // Full demo seed (Task 16): business showcase rows for the demo
+        // institution, idempotent, under the same gate.
+        SeedData.SeedDemoDataAsync(db, hasher).GetAwaiter().GetResult();
     }
 }
 
