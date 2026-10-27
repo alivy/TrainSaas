@@ -24,6 +24,10 @@ namespace TrainSaas.Api.Services;
 /// <item>全部 DateTime 为服务器本地时间（Global Constraints，不做 UTC 换算）。</item>
 /// <item>并发（R11）：唯一索引 (TemplateId,StartAt) 是数据库兜底；输家的
 /// DbUpdateException 被捕获并按最新库态单次重试收敛，无异常逃逸。</item>
+/// <item>R15：<see cref="EnsureSessionsForInstitutionAsync"/> 供家长端（无租户
+/// 上下文）按机构触发生成——同款钳制/幂等/收敛，但查询走 IgnoreQueryFilters +
+/// 显式机构谓词、新行显式落 InstitutionId。<see cref="EnsureSessionsAsync"/>
+/// （员工路径）行为零改动，两者共用同一份生成算法（私有 AddMissingSessionsAsync）。</item>
 /// </list>
 /// </summary>
 public class SessionGenerationService(AppDbContext db)
@@ -62,24 +66,82 @@ public class SessionGenerationService(AppDbContext db)
     }
 
     /// <summary>
+    /// R15：家长端触发的按机构惰性生成。语义与 <see cref="EnsureSessionsAsync"/>
+    /// 完全一致（同款 28 天窗口钳制、(TemplateId,StartAt) 幂等跳过、唯一索引 +
+    /// DbUpdateException 单次重试收敛），差别只在数据面：家长令牌没有租户上下文，
+    /// 所以模板与既有实例的查询走 <c>IgnoreQueryFilters()</c> + 显式
+    /// <c>InstitutionId == institutionId</c> 谓词（家长端豁免纪律），且新建实例
+    /// **显式落 InstitutionId**——依赖 SaveChanges 的自动填充在无租户上下文时会抛
+    /// ForbiddenActionException。机构 id 由调用方从已验证归属的孩子取得，绝不取自
+    /// 请求参数。
+    /// </summary>
+    public async Task EnsureSessionsForInstitutionAsync(int institutionId, DateTime from, DateTime to)
+    {
+        var effectiveTo = to < from.AddDays(GenerationWindowDays) ? to : from.AddDays(GenerationWindowDays);
+
+        if (!await AddMissingSessionsAsync(from, effectiveTo, institutionId))
+        {
+            return;
+        }
+
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // 与员工路径同款收敛：并发赢家（可能是机构侧的 EnsureSessionsAsync）
+            // 已提交相同 (TemplateId,StartAt)，丢弃本批冲突实体后按最新库态补一轮。
+            db.ChangeTracker.Clear();
+            await AddMissingSessionsAsync(from, effectiveTo, institutionId);
+            await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
     /// 把窗口内仍缺失的课次加入变更跟踪器（不落库）。返回是否加入了任何
     /// 实体；已存在 (TemplateId,StartAt) 的键（含本批内重复）一律跳过。
+    ///
+    /// <paramref name="institutionId"/> 为 null 时是员工路径（既有行为，零改动）：
+    /// 模板/实例查询经租户过滤器天然限定本机构，新行 InstitutionId 留 0 由
+    /// SaveChanges 按令牌自动填充。非 null 时是家长路径（R15）：查询改为
+    /// IgnoreQueryFilters + 显式机构谓词，新行显式落该机构 id。
     /// </summary>
-    private async Task<bool> AddMissingSessionsAsync(DateTime from, DateTime effectiveTo)
+    private async Task<bool> AddMissingSessionsAsync(
+        DateTime from, DateTime effectiveTo, int? institutionId = null)
     {
-        var templates = await db.ClassTemplates.AsNoTracking()
-            .Where(t => t.IsActive)
-            .ToListAsync();
+        List<ClassTemplate> templates;
+        if (institutionId is not null)
+        {
+            // 家长上下文无租户：IgnoreQueryFilters 必须紧跟显式机构谓词。
+            templates = await db.ClassTemplates.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.InstitutionId == institutionId.Value && t.IsActive)
+                .ToListAsync();
+        }
+        else
+        {
+            templates = await db.ClassTemplates.AsNoTracking()
+                .Where(t => t.IsActive)
+                .ToListAsync();
+        }
 
         var templateIds = templates.Select(t => t.Id).Distinct().ToList();
         var existingKeys = new HashSet<(int TemplateId, DateTime StartAt)>();
         if (templateIds.Count > 0)
         {
             var windowEndExclusive = effectiveTo.Date.AddDays(1);
-            var existing = await db.ClassSessions.AsNoTracking()
+            var existingQuery = db.ClassSessions.AsNoTracking()
                 .Where(cs => templateIds.Contains(cs.TemplateId)
                     && cs.StartAt >= from.Date
-                    && cs.StartAt < windowEndExclusive)
+                    && cs.StartAt < windowEndExclusive);
+            if (institutionId is not null)
+            {
+                existingQuery = existingQuery
+                    .IgnoreQueryFilters()
+                    .Where(cs => cs.InstitutionId == institutionId.Value);
+            }
+
+            var existing = await existingQuery
                 .Select(cs => new { cs.TemplateId, cs.StartAt })
                 .ToListAsync();
             foreach (var row in existing)
@@ -112,7 +174,9 @@ public class SessionGenerationService(AppDbContext db)
                     StartAt = startAt,
                     EndAt = date.Add(template.EndTime.ToTimeSpan()),
                     Status = SessionStatus.Scheduled,
-                    // InstitutionId 留 0：SaveChanges 按当前员工令牌自动填充。
+                    // 员工路径留 0：SaveChanges 按当前员工令牌自动填充（既有行为）。
+                    // 家长路径无租户上下文，自动填充会抛 403，故显式落机构 id（R15）。
+                    InstitutionId = institutionId ?? 0,
                 });
                 added = true;
             }

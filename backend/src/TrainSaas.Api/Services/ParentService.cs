@@ -24,12 +24,14 @@ namespace TrainSaas.Api.Services;
 /// 403，避免用状态码差异泄露别人孩子的存在性。</item>
 /// <item>后续查询同时带 StudentId 与 InstitutionId 双谓词：学员 id 全局唯一，
 /// InstitutionId 是纵深防御（孩子的机构之外的行一律不可见）。</item>
-/// <item>只读：家长端没有任何写路径，全部 AsNoTracking。</item>
+/// <item>读路径全部 AsNoTracking；唯一的写路径是课表的惰性生成（R15）——
+/// 经 <see cref="SessionGenerationService.EnsureSessionsForInstitutionAsync"/>
+/// 按"已验证归属的孩子所属机构"物化未来实例，机构 id 取自孩子行而非请求参数。</item>
 /// <item>名称（机构/产品/教师/订单号/课次时间）一律批量解析后在内存拼装，
 /// 无 N+1；金额不参与任何聚合（余量/课时数是 int，直接读列）。</item>
 /// </list>
 /// </summary>
-public class ParentService(AppDbContext db)
+public class ParentService(AppDbContext db, SessionGenerationService sessionGeneration)
 {
     /// <summary>
     /// GET /api/parent/children：令牌手机号名下的全部在读孩子（跨机构），
@@ -207,8 +209,14 @@ public class ParentService(AppDbContext db)
     /// GET /api/parent/schedule：某个孩子未来 days 天的课表——在班（Enrolled）
     /// 报名 + 启用（IsActive）模板的 Scheduled 实例，
     /// <c>StartAt ∈ [Now, Now.AddDays(days)]</c>，按 startAt 升序。room 读时取自
-    /// 模板（既有约定：ClassSession 不存教室）。课次仍由机构侧惰性生成，本方法
-    /// 只读已存在的实例。
+    /// 模板（既有约定：ClassSession 不存教室）。
+    ///
+    /// R15：查询前先按"孩子所属机构"触发一次惰性生成——课次是惰性物化的，若机构侧
+    /// 近期没人查过课表，库里可能一节实例都没有，家长会看到空课表（违背"家长端可看
+    /// 固定型课表"）。生成范围与机构侧一致（该机构全部启用模板），窗口与本次查询
+    /// 同口径；孩子跨机构时每次调用各按自己的机构触发。生成窗口仍受 28 天钳制
+    /// （SessionGenerationService），故 days&gt;28 时只有前 28 天会被物化，其余部分
+    /// 依赖机构侧已生成的实例。
     /// </summary>
     public async Task<List<ParentScheduleItem>> ListScheduleAsync(int studentId, int days, ICurrentUser caller)
     {
@@ -241,6 +249,11 @@ public class ParentService(AppDbContext db)
         {
             return [];
         }
+
+        // R15：家长端唯一的写路径。机构 id 取自已验证归属的孩子行（绝不取自请求
+        // 参数），生成方法内部同样 IgnoreQueryFilters + 显式机构谓词、新行显式落
+        // InstitutionId（家长令牌无租户上下文，自动填充会抛 403）。
+        await sessionGeneration.EnsureSessionsForInstitutionAsync(child.InstitutionId, now, until);
 
         var templateIds = templates.Select(t => t.Id).ToList();
         var sessions = await db.ClassSessions

@@ -9,10 +9,11 @@ using TrainSaas.Api.Services;
 namespace TrainSaas.Api.Controllers;
 
 /// <summary>
-/// 家长端只读 API（Task 15），类级 [ParentOnly]：孩子列表、课时包、课时流水、
+/// 家长端 API（Task 15），类级 [ParentOnly]：孩子列表、课时包、课时流水、
 /// 未来课表。家长令牌跨机构（只有 phone claim），数据面的租户过滤豁免纪律
 /// （每条查询 IgnoreQueryFilters + 显式 phone/孩子归属谓词、他人孩子一律 404
-/// 不泄露存在性）全部在 <see cref="ParentService"/> 内，见该类注释。
+/// 不泄露存在性）全部在 <see cref="ParentService"/> 内，见该类注释。四个路由
+/// 对家长都是只读的；唯一的写入是课表请求顺带触发的按机构惰性生成（R15）。
 ///
 /// studentId 必填（缺失 400，不静默当成 0）；records 的 from/to 可选、严格
 /// yyyy-MM-dd（非法 400）；schedule 的 days 安全解析（非法 400）并钳制 1..60，
@@ -70,7 +71,8 @@ public class ParentController(ParentService parentService, ICurrentUser currentU
     /// <summary>
     /// GET /api/parent/schedule?studentId&amp;days=14 →
     /// [{startAt,endAt,productName,teacherName,room,institutionName}]：在班且
-    /// 启用模板的未来 Scheduled 实例，startAt 升序；days 钳制 1..60。
+    /// 启用模板的未来 Scheduled 实例，startAt 升序；days 钳制 1..60。查询前按
+    /// 孩子所属机构触发一次惰性生成（R15），机构侧没人查过课表时家长也看得到。
     /// </summary>
     [HttpGet("schedule")]
     public async Task<ActionResult<List<ParentScheduleItem>>> Schedule(int? studentId, string? days) =>
