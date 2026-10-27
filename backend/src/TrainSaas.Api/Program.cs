@@ -35,6 +35,7 @@ builder.Services.AddScoped<StaffService>();
 builder.Services.AddScoped<ProductService>();
 builder.Services.AddScoped<StudentService>();
 builder.Services.AddScoped<IntentService>();
+builder.Services.AddScoped<FileStorageService>();
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("Default")));
 

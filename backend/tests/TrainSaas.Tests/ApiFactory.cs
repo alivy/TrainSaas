@@ -43,6 +43,15 @@ public class ApiFactory : WebApplicationFactory<Program>
         Directory.CreateDirectory(_tempDir);
     }
 
+    /// <summary>
+    /// The upload root the factory configures (<c>Storage:UploadRoot</c>): the
+    /// per-factory temporary directory itself. Exposed so file-storage tests
+    /// (Task 9) can assert on-disk effects relative to it. All stored files
+    /// live in <c>{purpose}/{institutionId}/{yyyyMM}/</c> subdirectories, so
+    /// they never collide with <c>test.db</c> in the same directory.
+    /// </summary>
+    public string UploadRoot => _tempDir;
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.ConfigureAppConfiguration((_, config) =>
