@@ -41,6 +41,25 @@ export function enumLabel(kind: EnumKind, value: string): string {
   return labels[kind]?.[value] ?? value
 }
 
+export type TagType = 'primary' | 'success' | 'info' | 'warning' | 'danger'
+
+const tagTypes: Record<EnumKind, Record<string, TagType>> = {
+  role: { Admin: 'danger', Sales: 'primary', Teacher: 'success', FrontDesk: 'info' },
+  productType: { Fixed: 'primary', Flexible: 'success' },
+  orderStatus: { Pending: 'info', Active: 'success', Cancelled: 'warning', Voided: 'danger' },
+  packStatus: { Active: 'success', Voided: 'danger' },
+  institutionStatus: { Active: 'success', Disabled: 'danger' },
+  sessionStatus: { Scheduled: 'info', Completed: 'success', Cancelled: 'warning' },
+  enrollmentStatus: { Enrolled: 'success', Withdrawn: 'info' },
+  mark: { Present: 'success', Leave: 'warning', Absent: 'danger' },
+  consumptionKind: { RollCall: 'primary', WalkIn: 'success', Reversal: 'danger' },
+  intentStatus: { New: 'warning', Followed: 'primary', Converted: 'success', Invalid: 'info' }
+}
+
+export function enumTagType(kind: EnumKind, value: string): TagType {
+  return tagTypes[kind]?.[value] ?? 'info'
+}
+
 /** 完整性自检用的枚举值表（重导出，方便页面直接遍历筛选下拉） */
 export { enumValues }
 export type { EnumKind }

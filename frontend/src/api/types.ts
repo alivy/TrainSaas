@@ -152,6 +152,7 @@ export interface StudentResponse {
   createdAt: string
 }
 export interface StudentPackItem {
+  packId: number // F5：walk-in 选包所需
   productId: number
   productName: string | null
   total: number
