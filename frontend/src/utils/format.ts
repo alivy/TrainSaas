@@ -69,3 +69,22 @@ export function toHHmm(timeOnly: string | null | undefined): string {
   if (!timeOnly) return ''
   return timeOnly.slice(0, 5)
 }
+
+const DAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+const DAY_NAME_MAP: Record<string, string> = {
+  Sunday: '周日',
+  Monday: '周一',
+  Tuesday: '周二',
+  Wednesday: '周三',
+  Thursday: '周四',
+  Friday: '周五',
+  Saturday: '周六'
+}
+
+/** 周几标签：兼容 int(0-6，模板/课表) 与后端枚举名字符串（学员详情班级项） */
+export function dayOfWeekLabel(value: number | string): string {
+  if (typeof value === 'number') {
+    return value >= 0 && value <= 6 ? DAY_NAMES[value] : String(value)
+  }
+  return DAY_NAME_MAP[value] ?? value
+}

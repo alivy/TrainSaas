@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatMoney, formatDateTime, formatDate, enumLabel } from '@/utils/format'
+import { formatMoney, formatDateTime, formatDate, enumLabel, dayOfWeekLabel, toHHmm } from '@/utils/format'
 import { enumValues } from '@/api/types'
 
 describe('formatMoney', () => {
@@ -45,5 +45,30 @@ describe('enumLabel', () => {
         expect(label, `${kind}.${v} 标签未翻译`).not.toBe(v)
       }
     }
+  })
+})
+
+describe('dayOfWeekLabel', () => {
+  it('int 0-6 → 周日至周六（模板/课表用）', () => {
+    expect(dayOfWeekLabel(0)).toBe('周日')
+    expect(dayOfWeekLabel(2)).toBe('周二')
+    expect(dayOfWeekLabel(4)).toBe('周四')
+    expect(dayOfWeekLabel(6)).toBe('周六')
+  })
+  it('后端枚举名字符串 → 中文（学员详情班级项用）', () => {
+    expect(dayOfWeekLabel('Tuesday')).toBe('周二')
+    expect(dayOfWeekLabel('Sunday')).toBe('周日')
+    expect(dayOfWeekLabel('Saturday')).toBe('周六')
+  })
+  it('未知值原样返回字符串', () => {
+    expect(dayOfWeekLabel(9)).toBe('9')
+    expect(dayOfWeekLabel('Funday')).toBe('Funday')
+  })
+})
+
+describe('toHHmm', () => {
+  it('TimeOnly 串截到分钟', () => {
+    expect(toHHmm('18:00:00')).toBe('18:00')
+    expect(toHHmm(null)).toBe('')
   })
 })
