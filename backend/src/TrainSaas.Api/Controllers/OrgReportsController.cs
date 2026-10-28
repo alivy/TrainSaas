@@ -1,4 +1,3 @@
-using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TrainSaas.Api.Auth;
@@ -43,32 +42,19 @@ public class OrgReportsController(ReportService reportService, ICurrentUser curr
         return Ok(await reportService.TeachersAsync(fromDate, toDate, currentUser));
     }
 
-    /// <summary>两张报表共用的窗口解析：必填、严格 yyyy-MM-dd、from ≤ to。</summary>
+    /// <summary>
+    /// 两张报表共用的窗口解析：必填、严格 yyyy-MM-dd（
+    /// <see cref="QueryParsers.ParseDate"/>）、from ≤ to。
+    /// </summary>
     private static (DateTime From, DateTime To) ParseWindow(string? from, string? to)
     {
-        var fromDate = ParseDate(from, "from");
-        var toDate = ParseDate(to, "to");
+        var fromDate = QueryParsers.ParseDate(from, "from");
+        var toDate = QueryParsers.ParseDate(to, "to");
         if (toDate < fromDate)
         {
             throw new BusinessRuleException("to 不能早于 from");
         }
 
         return (fromDate, toDate);
-    }
-
-    /// <summary>
-    /// 安全解析必填日期（严格 yyyy-MM-dd，本地日期）：缺失/非法值 → 400
-    /// （BusinessRuleException），绝不 500。
-    /// </summary>
-    private static DateTime ParseDate(string? value, string field)
-    {
-        if (string.IsNullOrWhiteSpace(value)
-            || !DateTime.TryParseExact(
-                value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
-        {
-            throw new BusinessRuleException($"{field} 必须是 yyyy-MM-dd 格式的日期");
-        }
-
-        return parsed.Date;
     }
 }

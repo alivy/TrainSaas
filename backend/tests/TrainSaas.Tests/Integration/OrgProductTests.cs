@@ -204,6 +204,12 @@ public class OrgProductTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, badType.StatusCode);
         problem = await ProblemDetailAsync(badType);
         Assert.Contains("类型", problem.GetProperty("detail").GetString());
+
+        // M1：数字串 "1"（此前被 Enum.TryParse+IsDefined 误收为 Flexible）现
+        // 与未定义名一样 400——QueryParsers 全站统一口径。
+        var numericType = await client.GetAsync("/api/org/products?type=1");
+        Assert.Equal(HttpStatusCode.BadRequest, numericType.StatusCode);
+
         var badPublished = await client.GetAsync("/api/org/products?published=maybe");
         Assert.Equal(HttpStatusCode.BadRequest, badPublished.StatusCode);
 

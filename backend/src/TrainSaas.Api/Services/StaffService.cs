@@ -48,26 +48,27 @@ public class StaffService(AppDbContext db, IPasswordHasherService hasher)
 
     /// <summary>
     /// 创建员工 {name,phone,role}：初始密码 123456、默认激活，归属机构由
-    /// SaveChanges 按当前 Admin 令牌自动填充。手机号与任意机构（含本机构）的
+    /// SaveChanges 按当前 Admin 令牌自动填充。手机号经
+    /// <see cref="PhoneValidator"/>（trim + <c>^1\d{10}$</c>，M2：非法 400，
+    /// 落库/唯一性检查一律用 trim 后的规范值）；与任意机构（含本机构）的
     /// 员工冲突 → <see cref="ConflictException"/> 409。
     /// </summary>
     public async Task<Staff> CreateAsync(CreateStaffRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
             throw new BusinessRuleException("员工姓名不能为空");
-        if (string.IsNullOrWhiteSpace(request.Phone))
-            throw new BusinessRuleException("员工手机号不能为空");
+        var phone = PhoneValidator.Validate(request.Phone, "员工手机号");
         var role = ParseRole(request.Role);
 
         // 全局唯一的登录手机号：Admin 令牌的租户过滤器会隐藏其它机构的员工，
         // 冲突检查必须忽略过滤器——排除任何机构的命中，包括本机构。
-        if (await db.Staff.IgnoreQueryFilters().AnyAsync(s => s.Phone == request.Phone))
+        if (await db.Staff.IgnoreQueryFilters().AnyAsync(s => s.Phone == phone))
             throw new ConflictException("手机号已被占用");
 
         var staff = new Staff
         {
             Name = request.Name,
-            Phone = request.Phone,
+            Phone = phone,
             Role = role,
             // 实体默认是 false——新员工必须显式激活，否则创建后无法登录。
             IsActive = true,
@@ -164,20 +165,13 @@ public class StaffService(AppDbContext db, IPasswordHasherService hasher)
     }
 
     /// <summary>
-    /// 安全解析角色（忽略大小写；数值或未定义的枚举值同样视为非法）。
+    /// 安全解析角色：枚举名忽略大小写（"Admin"）；数字串（"0"…"3"，此前被
+    /// IsDefined 误收）与未定义名一律 400——统一走
+    /// <see cref="QueryParsers.ParseEnum{T}"/>（M1 收敛，口径全站一致）。
     /// 非法值抛 <see cref="BusinessRuleException"/>（400），绝不 500。
     /// </summary>
-    public static StaffRole ParseRole(string? role)
-    {
-        if (string.IsNullOrWhiteSpace(role)
-            || !Enum.TryParse(role, ignoreCase: true, out StaffRole parsed)
-            || !Enum.IsDefined(parsed))
-        {
-            throw new BusinessRuleException("角色参数无效");
-        }
-
-        return parsed;
-    }
+    public static StaffRole ParseRole(string? role) =>
+        QueryParsers.ParseEnum<StaffRole>(role, "角色参数无效");
 
     /// <summary>按 id 查员工；租户过滤器下不可见（跨机构/不存在）→ 404。</summary>
     private async Task<Staff> FindStaffOrThrowAsync(int id) =>

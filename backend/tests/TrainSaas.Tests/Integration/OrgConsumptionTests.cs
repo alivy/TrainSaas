@@ -166,6 +166,12 @@ public class OrgConsumptionTests(ApiFactory factory) : IClassFixture<ApiFactory>
         // 非法 kind 安全解析 → 400（绝不 500）。
         var badKind = await client.GetAsync("/api/org/consumptions?kind=Banana");
         Assert.Equal(HttpStatusCode.BadRequest, badKind.StatusCode);
+
+        // M1：数字串 "1"（此前被 Enum.TryParse+IsDefined 误收为 WalkIn）现与
+        // 未定义名一样 400——QueryParsers 全站统一口径。
+        var numericKind = await client.GetAsync("/api/org/consumptions?kind=1");
+        Assert.Equal(HttpStatusCode.BadRequest, numericKind.StatusCode);
+
         var badFrom = await client.GetAsync("/api/org/consumptions?from=2026/10/01");
         Assert.Equal(HttpStatusCode.BadRequest, badFrom.StatusCode);
 

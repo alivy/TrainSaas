@@ -205,20 +205,13 @@ public class IntentService(AppDbContext db)
     }
 
     /// <summary>
-    /// 安全解析意向状态（忽略大小写；数值或未定义的枚举值同样视为非法）。
+    /// 安全解析意向状态：枚举名忽略大小写（"New"）；数字串（"0"…"3"，
+    /// 此前被 IsDefined 误收）与未定义名一律 400——统一走
+    /// <see cref="QueryParsers.ParseEnum{T}"/>（M1 收敛，口径全站一致）。
     /// 非法值抛 <see cref="BusinessRuleException"/>（400），绝不 500。
     /// </summary>
-    public static IntentStatus ParseStatus(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status)
-            || !Enum.TryParse(status, ignoreCase: true, out IntentStatus parsed)
-            || !Enum.IsDefined(parsed))
-        {
-            throw new BusinessRuleException("状态参数无效");
-        }
-
-        return parsed;
-    }
+    public static IntentStatus ParseStatus(string? status) =>
+        QueryParsers.ParseEnum<IntentStatus>(status, "状态参数无效");
 
     /// <summary>
     /// 公开端点的机构定位：不存在或非 Active 一律 404（响应一致，不泄露

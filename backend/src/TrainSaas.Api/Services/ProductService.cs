@@ -112,20 +112,13 @@ public class ProductService(AppDbContext db)
     }
 
     /// <summary>
-    /// 安全解析课程类型（忽略大小写；数值或未定义的枚举值同样视为非法）。
+    /// 安全解析课程类型：枚举名忽略大小写（"Fixed"）；数字串（"0"/"1"，
+    /// 此前被 IsDefined 误收）与未定义名一律 400——统一走
+    /// <see cref="QueryParsers.ParseEnum{T}"/>（M1 收敛，口径全站一致）。
     /// 非法值抛 <see cref="BusinessRuleException"/>（400），绝不 500。
     /// </summary>
-    public static ProductType ParseType(string? type)
-    {
-        if (string.IsNullOrWhiteSpace(type)
-            || !Enum.TryParse(type, ignoreCase: true, out ProductType parsed)
-            || !Enum.IsDefined(parsed))
-        {
-            throw new BusinessRuleException("课程类型无效");
-        }
-
-        return parsed;
-    }
+    public static ProductType ParseType(string? type) =>
+        QueryParsers.ParseEnum<ProductType>(type, "课程类型无效");
 
     private static string ValidateName(string name)
     {

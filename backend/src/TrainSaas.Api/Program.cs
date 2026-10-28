@@ -121,13 +121,14 @@ var app = builder.Build();
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
-}
 
-// R16a: Swagger UI (middleware only) over the built-in OpenAPI document, so
-// http://host/swagger is browsable wherever /openapi/v1.json is mapped
-// (Development). All environments per ruling — harmless on single-host deploys.
-app.UseSwaggerUI(options =>
-    options.SwaggerEndpoint("/openapi/v1.json", "TrainSaas API"));
+    // R16a/M5 (final review): Swagger UI (middleware only) over the built-in
+    // OpenAPI document. Gated to Development alongside the /openapi/v1.json
+    // document it points at — outside Development the UI shell would be
+    // served while its document 404s, which helped nobody.
+    app.UseSwaggerUI(options =>
+        options.SwaggerEndpoint("/openapi/v1.json", "TrainSaas API"));
+}
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 

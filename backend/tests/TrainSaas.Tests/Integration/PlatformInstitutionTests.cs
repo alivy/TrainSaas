@@ -231,6 +231,31 @@ public class PlatformInstitutionTests(ApiFactory factory) : IClassFixture<ApiFac
         Assert.Equal(HttpStatusCode.BadRequest, bothBad.StatusCode);
     }
 
+    /// <summary>
+    /// M2（最终审查）：管理员手机号走 <see cref="PhoneValidator"/>（trim +
+    /// ^1\d{10}$）——格式非法 400（先于编码/唯一性校验），合法值 trim 后落库。
+    /// </summary>
+    [Fact]
+    public async Task Create_with_malformed_admin_phone_returns_400_and_trims_a_valid_one()
+    {
+        var client = await LoginPlatformAsync();
+
+        var malformed = await PostCreateAsync(client, "pi3c", "13922");
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        var problem = await malformed.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("管理员手机号", problem.GetProperty("detail").GetString());
+
+        // 空手机号同样 400（且文案仍指明是管理员手机号）。
+        var missing = await PostCreateAsync(client, "pi3d", "  ");
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+
+        // 合法但带空白：trim 后通过唯一性检查并以规范值落库（该管理员可登录）。
+        var padded = await PostCreateAsync(client, "pi3e", " 13922200033 ");
+        Assert.Equal(HttpStatusCode.Created, padded.StatusCode);
+        var blocked = await StaffLoginAsync("13922200033");
+        Assert.Equal(HttpStatusCode.OK, blocked.StatusCode);
+    }
+
     [Fact]
     public async Task Create_with_phone_already_used_by_staff_returns_409()
     {
@@ -417,6 +442,11 @@ public class PlatformInstitutionTests(ApiFactory factory) : IClassFixture<ApiFac
         // Default parameters work too.
         var noParams = await client.GetAsync("/api/platform/institutions");
         Assert.Equal(HttpStatusCode.OK, noParams.StatusCode);
+
+        // M1：数字串 "0"（此前被 Enum.TryParse+IsDefined 误收为 Active）现与
+        // 未定义名一样 400——QueryParsers 全站统一口径。
+        var numeric = await client.GetAsync("/api/platform/institutions?status=0");
+        Assert.Equal(HttpStatusCode.BadRequest, numeric.StatusCode);
     }
 
     /// <summary>Pins the PUT contract: only non-null fields update; unknown id → 404.</summary>

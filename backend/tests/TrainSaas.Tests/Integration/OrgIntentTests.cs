@@ -368,6 +368,11 @@ public class OrgIntentTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var problem = await ProblemDetailAsync(bad);
         Assert.Contains("状态", problem.GetProperty("detail").GetString());
 
+        // M1：数字串 "1"（此前被 Enum.TryParse+IsDefined 误收为 Followed）现
+        // 与未定义名一样 400——QueryParsers 全站统一口径。
+        var numeric = await adminClient.GetAsync("/api/org/intents?status=1");
+        Assert.Equal(HttpStatusCode.BadRequest, numeric.StatusCode);
+
         // …and paging follows the shared Paged contract.
         var paged2 = await adminClient.GetAsync("/api/org/intents?page=1&pageSize=2");
         var two = await paged2.Content.ReadFromJsonAsync<JsonElement>();

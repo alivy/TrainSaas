@@ -1,4 +1,3 @@
-using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TrainSaas.Api.Auth;
@@ -13,7 +12,8 @@ namespace TrainSaas.Api.Controllers;
 /// Teacher 只见自己授课的课次（详情范围外一律 404，不泄露存在性），
 /// Admin/Sales/FrontDesk 见全机构（租户过滤器已限本机构）。
 /// 列表先按窗口惰性生成（单次最多 28 天），再查询；from/to 为
-/// yyyy-MM-dd 且跨度不得超过 60 天，非法一律 400。
+/// yyyy-MM-dd 且跨度不得超过 60 天，非法一律 400（解析统一走
+/// <see cref="QueryParsers"/>，T15③ 收敛）。
 /// 点名（POST {id}/attendance）的细权限（Admin 或本课次授课教师）在
 /// 服务层裁决，403/404/400 经中间件映射。
 /// </summary>
@@ -37,8 +37,8 @@ public class OrgSessionsController(
     [HttpGet]
     public async Task<ActionResult<List<SessionListItem>>> List(string? from, string? to)
     {
-        var fromDate = ParseDate(from, "from");
-        var toDate = ParseDate(to, "to");
+        var fromDate = QueryParsers.ParseDate(from, "from");
+        var toDate = QueryParsers.ParseDate(to, "to");
         if (toDate < fromDate)
         {
             throw new BusinessRuleException("to 不能早于 from");
@@ -75,21 +75,5 @@ public class OrgSessionsController(
     {
         var marks = request.Marks?.Select(m => new MarkItem(m.StudentId, m.Mark)).ToList();
         return Ok(await attendanceService.MarkAsync(id, marks, currentUser));
-    }
-
-    /// <summary>
-    /// 安全解析日期（严格 yyyy-MM-dd，本地日期）；缺失/非法值 400
-    /// （BusinessRuleException），绝不 500。
-    /// </summary>
-    private static DateTime ParseDate(string? value, string field)
-    {
-        if (string.IsNullOrWhiteSpace(value)
-            || !DateTime.TryParseExact(
-                value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
-        {
-            throw new BusinessRuleException($"{field} 必须是 yyyy-MM-dd 格式的日期");
-        }
-
-        return parsed.Date;
     }
 }

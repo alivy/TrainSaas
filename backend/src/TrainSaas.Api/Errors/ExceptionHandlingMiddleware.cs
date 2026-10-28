@@ -15,6 +15,15 @@ namespace TrainSaas.Api.Errors;
 /// thrown by LINQ/EF Core/ASP.NET infrastructure — maps to 500 with a generic
 /// detail; the original exception (message + stack trace) is logged via
 /// <see cref="ILogger{TCategoryName}"/> and never sent to the client.
+///
+/// Exception (M6, final review): an <see cref="OperationCanceledException"/>
+/// raised while the client has already disconnected
+/// (<c>context.RequestAborted</c> triggered) is not a server error — logging
+/// it as a 500 and attempting to write a 500 response only pollutes the error
+/// log with connection noise on a response nobody will read. It is rethrown
+/// for the web server to close the aborted request quietly. An
+/// OperationCanceledException without a client abort (e.g. a server-side
+/// timeout token) is still a genuine 500.
 /// </summary>
 public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
 {
@@ -28,6 +37,13 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
         }
         catch (Exception ex)
         {
+            // M6: 客户端已断开时的取消不是服务器错误——不记 500、不写 500，
+            // 原样上抛交给服务器按连接中止收尾（避免日志噪音与注定失败的写入）。
+            if (ex is OperationCanceledException && context.RequestAborted.IsCancellationRequested)
+            {
+                throw;
+            }
+
             if (context.Response.HasStarted)
             {
                 throw;

@@ -452,11 +452,15 @@ public class FileTests(ApiFactory factory) : IClassFixture<ApiFactory>
     /// <summary>
     /// T9①（最终审查必修延后项）：GET /api/files/vouchers/{id} 的三个安全分支
     /// 此前零测试覆盖——本测试把它们钉死，移除 ResolveForServing 的任何一道
-    /// 防线（根内断言 / 物理存在 / 扩展名白名单）都会让全套变红：
-    /// ① FilePath="../../etc/passwd"（根外穿越，文件物理存在）→ 404；
+    /// 防线（根内断言 / 物理存在 / 扩展名白名单）都会让本测试变红（突变验证
+    /// 过）：
+    /// ① 根外穿越 → 404。两段：a) FilePath="../../etc/passwd"（文件物理存在
+    /// 但无扩展名）；b) 关键 mutation 用例——上传根**同级目录**下的
+    /// "trainsaas-traversal-evil.png"（物理存在且扩展名在白名单内）：若去掉
+    /// 根内断言，扩展名/存在性两道防线都拦不住它，会以 200 泄露内容；
     /// ② 行存在但物理文件缺失 → 404；
     /// ③ FilePath 为 .txt（文件物理存在）→ 404，且绝不回显内容。
-    /// 对照组：同目录下的合法 .png 正常下发（404 来自防线而非路由坏了）。
+    /// 对照组：上传根内的合法 .png 正常下发（404 来自防线而非路由坏了）。
     /// </summary>
     [Fact]
     public async Task Voucher_serving_traversal_missing_file_and_bad_extension_return_404()
@@ -465,7 +469,7 @@ public class FileTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var staff = await SeedStaffAsync(institution.Id, "13966600010");
         var client = await LoginStaffClientAsync("13966600010");
 
-        // ① 穿越：FilePath 指向上传根之外（/etc/passwd 物理存在）→ 404。
+        // ①a 穿越：FilePath 指向上传根之外（/etc/passwd 物理存在）→ 404。
         var traversalOrder = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
         var traversalVoucher = await SeedVoucherAsync(
             traversalOrder.Id, institution.Id, staff.Id, filePath: "../../etc/passwd");
@@ -473,6 +477,27 @@ public class FileTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.NotFound, traversal.StatusCode);
         await ProblemDetailAsync(traversal);
         Assert.DoesNotContain("root:", await traversal.Content.ReadAsStringAsync());
+
+        // ①b 根外穿越且"看似合法"：../trainsaas-traversal-evil.png 解析到上传
+        // 根的父目录（本测试宿主的临时目录就在其中），文件物理存在、扩展名
+        // .png 在白名单内——单独去掉根内断言时此用例必 200（故必红）。
+        var evilOutside = Path.Combine(
+            Path.GetDirectoryName(factory.UploadRoot)!, "trainsaas-traversal-evil.png");
+        var traversalOrder2 = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);
+        try
+        {
+            await File.WriteAllBytesAsync(evilOutside, "OUTSIDE-SECRET"u8.ToArray());
+            var evilVoucher = await SeedVoucherAsync(
+                traversalOrder2.Id, institution.Id, staff.Id,
+                filePath: "../trainsaas-traversal-evil.png");
+            var evil = await client.GetAsync($"/api/files/vouchers/{evilVoucher.Id}");
+            Assert.Equal(HttpStatusCode.NotFound, evil.StatusCode);
+            Assert.DoesNotContain("OUTSIDE-SECRET", await evil.Content.ReadAsStringAsync());
+        }
+        finally
+        {
+            File.Delete(evilOutside);
+        }
 
         // ② 行存在、物理文件缺失 → 404。
         var missingOrder = await SeedOrderAsync(institution.Id, staff.Id, OrderStatus.Pending);

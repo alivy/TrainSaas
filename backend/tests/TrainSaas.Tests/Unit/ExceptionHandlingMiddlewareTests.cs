@@ -81,4 +81,33 @@ public class ExceptionHandlingMiddlewareTests
         Assert.NotNull(body.Detail);
         Assert.DoesNotContain("EF model internal state is broken", body.Detail);
     }
+
+    /// <summary>
+    /// M6（最终审查）：客户端已断开（RequestAborted 已触发）时的
+    /// OperationCanceledException 不是服务器错误——异常原样上抛，绝不记 500
+    /// 也绝不写 500 响应（响应体保持未写）。
+    /// </summary>
+    [Fact]
+    public async Task OperationCanceledException_on_aborted_request_is_rethrown_without_a_response()
+    {
+        RequestDelegate next = _ => throw new OperationCanceledException();
+        var middleware = new ExceptionHandlingMiddleware(next, NullLogger<ExceptionHandlingMiddleware>.Instance);
+        var context = new DefaultHttpContext();
+        context.Response.Body = new MemoryStream();
+        context.RequestAborted = new CancellationToken(canceled: true);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+        Assert.Equal(0, context.Response.Body.Length);
+    }
+
+    /// <summary>M6 反向对照：无客户端断开的取消（如服务端超时令牌）仍是 500。</summary>
+    [Fact]
+    public async Task OperationCanceledException_without_client_abort_maps_to_500()
+    {
+        var (statusCode, body) = await InvokeAsync(new OperationCanceledException("server-side timeout"));
+        Assert.Equal(500, statusCode);
+        Assert.Equal("服务器内部错误", body.Detail);
+    }
 }

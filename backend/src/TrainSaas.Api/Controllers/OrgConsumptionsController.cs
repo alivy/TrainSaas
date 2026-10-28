@@ -1,4 +1,3 @@
-using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using TrainSaas.Api.Auth;
@@ -15,7 +14,8 @@ namespace TrainSaas.Api.Controllers;
 /// 细规则（Sales 仅名下学员、Teacher 仅本人操作/本人授课课次；撤销限
 /// Admin 或当日操作人本人）在 <see cref="ConsumptionService"/> 内裁决，
 /// 400/403/404/409 经中间件映射。from/to 为可选的 yyyy-MM-dd（非法 400），
-/// kind 为枚举名（安全解析，非法 400，绝不 500）。
+/// kind 为枚举名（忽略大小写；数字串与未定义名一律 400，
+/// <see cref="QueryParsers"/> 全站统一口径）。
 /// </summary>
 [ApiController]
 [Route("api/org/consumptions")]
@@ -45,11 +45,13 @@ public class OrgConsumptionsController(
     public async Task<ActionResult<Paged<ConsumptionItem>>> List(
         int? studentId, string? from, string? to, string? kind, int? page, int? pageSize)
     {
-        var fromDate = ParseOptionalDate(from, "from");
-        var toDate = ParseOptionalDate(to, "to");
+        var fromDate = QueryParsers.ParseOptionalDate(from, "from");
+        var toDate = QueryParsers.ParseOptionalDate(to, "to");
+        var parsedKind = QueryParsers.ParseOptionalEnum<ConsumptionKind>(
+            kind, "kind 必须是 RollCall/WalkIn/Reversal 之一");
         var (pageNumber, pageSizeValue) = Paging.Normalize(page, pageSize);
         return Ok(await consumptionService.ListAsync(
-            studentId, fromDate, toDate, ParseKind(kind), pageNumber, pageSizeValue, currentUser));
+            studentId, fromDate, toDate, parsedKind, pageNumber, pageSizeValue, currentUser));
     }
 
     /// <summary>
@@ -62,44 +64,5 @@ public class OrgConsumptionsController(
     {
         var mirror = await consumptionService.ReverseAsync(id, request.Reason, currentUser);
         return StatusCode(StatusCodes.Status201Created, new ReverseResult(mirror.Id));
-    }
-
-    /// <summary>
-    /// 安全解析可选日期（严格 yyyy-MM-dd，本地日期）：缺失/null/空白 →
-    /// null；非法值 → 400（BusinessRuleException），绝不 500。
-    /// </summary>
-    private static DateTime? ParseOptionalDate(string? value, string field)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        if (!DateTime.TryParseExact(
-                value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
-        {
-            throw new BusinessRuleException($"{field} 必须是 yyyy-MM-dd 格式的日期");
-        }
-
-        return parsed.Date;
-    }
-
-    /// <summary>
-    /// 安全解析 kind（区分大小写的枚举名 RollCall/WalkIn/Reversal）：缺失 →
-    /// null（不过滤）；非法值（含未定义数字）→ 400，绝不 500。
-    /// </summary>
-    private static ConsumptionKind? ParseKind(string? kind)
-    {
-        if (string.IsNullOrWhiteSpace(kind))
-        {
-            return null;
-        }
-
-        if (!Enum.TryParse<ConsumptionKind>(kind, out var parsed) || !Enum.IsDefined(parsed))
-        {
-            throw new BusinessRuleException("kind 必须是 RollCall/WalkIn/Reversal 之一");
-        }
-
-        return parsed;
     }
 }

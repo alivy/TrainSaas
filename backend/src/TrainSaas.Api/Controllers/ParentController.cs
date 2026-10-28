@@ -61,8 +61,8 @@ public class ParentController(ParentService parentService, ICurrentUser currentU
         var (pageNumber, pageSizeValue) = Paging.Normalize(page, pageSize);
         return Ok(await parentService.ListRecordsAsync(
             RequireStudentId(studentId),
-            ParseOptionalDate(from, "from"),
-            ParseOptionalDate(to, "to"),
+            QueryParsers.ParseOptionalDate(from, "from"),
+            QueryParsers.ParseOptionalDate(to, "to"),
             pageNumber,
             pageSizeValue,
             currentUser));
@@ -99,25 +99,5 @@ public class ParentController(ParentService parentService, ICurrentUser currentU
         }
 
         return Math.Clamp(parsed, 1, MaxScheduleDays);
-    }
-
-    /// <summary>
-    /// 安全解析可选日期（严格 yyyy-MM-dd，本地日期）：缺失/null/空白 → null；
-    /// 非法值 → 400（BusinessRuleException），绝不 500。
-    /// </summary>
-    private static DateTime? ParseOptionalDate(string? value, string field)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        if (!DateTime.TryParseExact(
-                value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
-        {
-            throw new BusinessRuleException($"{field} 必须是 yyyy-MM-dd 格式的日期");
-        }
-
-        return parsed.Date;
     }
 }

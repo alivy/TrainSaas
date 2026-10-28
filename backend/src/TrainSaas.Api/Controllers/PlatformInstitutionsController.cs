@@ -39,8 +39,9 @@ public class PlatformInstitutionsController(
     /// <summary>
     /// GET /api/platform/institutions?status&amp;page&amp;pageSize →
     /// Paged&lt;{id,code,name,status,staffCount,studentCount,createdAt}&gt;。
-    /// status 可选（Active/Disabled，非法值 400）；计数用 CountAsync 配显式
-    /// InstitutionId 谓词（int 计数，SQLite 聚合安全）。
+    /// status 可选（Active/Disabled，枚举名忽略大小写；数字串与未定义名
+    /// 一律 400，<see cref="QueryParsers"/> 统一口径）；计数用 CountAsync 配
+    /// 显式 InstitutionId 谓词（int 计数，SQLite 聚合安全）。
     /// </summary>
     [HttpGet]
     public async Task<ActionResult<Paged<InstitutionListItem>>> List(
@@ -50,8 +51,7 @@ public class PlatformInstitutionsController(
 
         if (!string.IsNullOrWhiteSpace(status))
         {
-            if (!Enum.TryParse(status, ignoreCase: true, out InstitutionStatus parsed))
-                throw new BusinessRuleException("机构状态参数无效");
+            var parsed = QueryParsers.ParseEnum<InstitutionStatus>(status, "机构状态参数无效");
             query = query.Where(i => i.Status == parsed);
         }
 

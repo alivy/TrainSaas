@@ -170,6 +170,38 @@ public class OrgStaffTests(ApiFactory factory) : IClassFixture<ApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, badRole.StatusCode);
         var problem = await ProblemDetailAsync(badRole);
         Assert.Contains("角色", problem.GetProperty("detail").GetString());
+
+        // M1：数字串 "0"（此前被 Enum.TryParse+IsDefined 误收为 Admin）现与
+        // 未定义名一样 400——QueryParsers 全站统一口径。
+        var numeric = await client.GetAsync("/api/org/staff?role=0");
+        Assert.Equal(HttpStatusCode.BadRequest, numeric.StatusCode);
+    }
+
+    /// <summary>
+    /// M2（最终审查）：创建员工的手机号走 <see cref="PhoneValidator"/>（trim +
+    /// ^1\d{10}$）——格式非法 400、带空白的合法值 trim 后落库并可登录。
+    /// </summary>
+    [Fact]
+    public async Task Staff_create_rejects_malformed_phone_and_trims_a_valid_one()
+    {
+        var institution = await SeedInstitutionAsync("os9");
+        await SeedStaffAsync(institution.Id, "13933300900", StaffRole.Admin);
+        var client = await LoginStaffClientAsync("13933300900");
+
+        // 格式非法（位数不足）→ 400，文案指明是员工手机号。
+        var malformed = await client.PostAsJsonAsync("/api/org/staff",
+            new { name = "坏手机号", phone = "12345", role = "Sales" });
+        Assert.Equal(HttpStatusCode.BadRequest, malformed.StatusCode);
+        var problem = await ProblemDetailAsync(malformed);
+        Assert.Contains("员工手机号", problem.GetProperty("detail").GetString());
+
+        // 合法但带首尾空白：trim 后落库（响应回规范值），并能以该手机号登录。
+        var padded = await client.PostAsJsonAsync("/api/org/staff",
+            new { name = "带空白手机号", phone = " 13933300901 ", role = "FrontDesk" });
+        Assert.Equal(HttpStatusCode.Created, padded.StatusCode);
+        var created = await padded.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("13933300901", created.GetProperty("phone").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await StaffLoginAsync("13933300901")).StatusCode);
     }
 
     [Fact]

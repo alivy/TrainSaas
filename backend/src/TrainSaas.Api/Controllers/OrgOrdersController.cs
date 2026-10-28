@@ -15,6 +15,8 @@ namespace TrainSaas.Api.Controllers;
 /// 创建追加 [AdminSalesFrontDesk]；确认/作废追加 [AdminOnly]（两策略按
 /// AND 组合）；取消仅 [StaffOnly]——Admin 或订单创建人本人的裁决在服务层
 /// （403）。状态机的全部业务规则与事务语义见 <see cref="OrderService"/>。
+/// ?status= 过滤值经 <see cref="QueryParsers"/> 安全解析（枚举名忽略大小写，
+/// 数字串与未定义名一律 400）。
 /// </summary>
 [ApiController]
 [Route("api/org/orders")]
@@ -31,7 +33,7 @@ public class OrgOrdersController(OrderService orderService, ICurrentUser current
     public async Task<ActionResult<Paged<OrderListItem>>> List(
         string? status, int? studentId, int? page, int? pageSize)
     {
-        var parsedStatus = ParseStatus(status);
+        var parsedStatus = QueryParsers.ParseOptionalEnum<OrderStatus>(status, "订单状态无效");
         var (pageNumber, pageSizeValue) = Paging.Normalize(page, pageSize);
         return Ok(await orderService.ListAsync(parsedStatus, studentId, pageNumber, pageSizeValue));
     }
@@ -95,26 +97,6 @@ public class OrgOrdersController(OrderService orderService, ICurrentUser current
     {
         await orderService.VoidAsync(id, request.Reason, request.RefundAmount, RequireStaffId());
         return NoContent();
-    }
-
-    /// <summary>
-    /// 安全解析订单状态过滤值（忽略大小写；数值或未定义的枚举值同样视为
-    /// 非法）。空值表示不过滤；非法值 400，绝不 500。
-    /// </summary>
-    private static OrderStatus? ParseStatus(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status))
-        {
-            return null;
-        }
-
-        if (!Enum.TryParse(status, ignoreCase: true, out OrderStatus parsed)
-            || !Enum.IsDefined(parsed))
-        {
-            throw new BusinessRuleException("订单状态无效");
-        }
-
-        return parsed;
     }
 
     /// <summary>防御性守卫：staff 令牌必含 staff_id/role，缺失即拒绝而非落脏数据。</summary>
