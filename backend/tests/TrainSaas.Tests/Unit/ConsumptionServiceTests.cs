@@ -1,5 +1,7 @@
+using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
 using TrainSaas.Api.Domain;
@@ -669,5 +671,154 @@ public class ConsumptionServiceTests
             OperatorId = 2,
         });
         await Assert.ThrowsAsync<DbUpdateException>(() => db.SaveChangesAsync());
+    }
+
+    // ---------- 服务级并发冲正收敛（T14①，随 I4 补齐） ----------
+
+    /// <summary>
+    /// 竞态重放拦截器（测试缝，一次性）：挂在"输家"上下文的**事务开始之前**
+    /// （TransactionStarting 在 BEGIN 执行前触发；此刻输家已完成"是否已撤销"
+    /// 预检、锁定了陈旧视图，且延迟事务尚未持任何锁），让"赢家"在独立连接上
+    /// 完整跑完 ReverseAsync 并提交——确定性重现并发双撤销：输家随后的镜像行
+    /// 插入必撞 ReversesConsumptionId 唯一索引。钩子绝不能挂在输家事务**内**
+    /// 的写命令上：那时输家已持写锁，赢家的写会 database-is-locked 死锁。
+    /// HookFired 自证测试确实走到了交错窗口。
+    /// </summary>
+    private sealed class WinnerRunsBeforeLoserTransaction(Func<Task> winnerWrites)
+        : DbTransactionInterceptor
+    {
+        private Func<Task>? _winnerWrites = winnerWrites;
+
+        public bool HookFired { get; private set; }
+
+        public override InterceptionResult<DbTransaction> TransactionStarting(
+            DbConnection connection, TransactionStartingEventData eventData,
+            InterceptionResult<DbTransaction> result)
+        {
+            MaybeRace().GetAwaiter().GetResult();
+            return base.TransactionStarting(connection, eventData, result);
+        }
+
+        public override async ValueTask<InterceptionResult<DbTransaction>> TransactionStartingAsync(
+            DbConnection connection, TransactionStartingEventData eventData,
+            InterceptionResult<DbTransaction> result, CancellationToken cancellationToken = default)
+        {
+            await MaybeRace();
+            return await base.TransactionStartingAsync(connection, eventData, result, cancellationToken);
+        }
+
+        private async Task MaybeRace()
+        {
+            var hook = _winnerWrites;
+            if (hook is null)
+            {
+                return;
+            }
+
+            _winnerWrites = null;
+            HookFired = true;
+            await hook();
+        }
+    }
+
+    /// <summary>临时文件库上下文（双上下文竞态测试）：同一文件、独立连接，可选挂拦截器。</summary>
+    private static AppDbContext CreateFileDb(
+        string dataSource, ICurrentUser user, IInterceptor? interceptor = null)
+    {
+        var builder = new DbContextOptionsBuilder<AppDbContext>().UseSqlite(dataSource);
+        if (interceptor is not null)
+        {
+            builder.AddInterceptors(interceptor);
+        }
+
+        return new AppDbContext(builder.Options, user);
+    }
+
+    private static void TryDeleteDbFiles(string dbPath)
+    {
+        foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
+        {
+            try
+            {
+                File.Delete(dbPath + suffix);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// T14①（账本延后项，随 I4 补齐）：服务级并发双撤销的收敛路径此前零
+    /// 覆盖（移除 ReverseAsync 的 catch 段全套仍绿——索引测试只证数据库层
+    /// 拒绝）。确定性交错（临时文件库 + 双上下文 + 钩子挂在输家的第一条
+    /// UPDATE，即包回补 ExecuteUpdate 执行之前）：双方都通过"已存在冲正行"
+    /// 预检 → 赢家先提交镜像行 → 输家的插入撞 ReversesConsumptionId 唯一
+    /// 索引 → DbUpdateException 必须收敛为 409（回滚后复查确认），余量只
+    /// 回补一次、镜像行恰一条、原行 append-only 一字不动。
+    /// </summary>
+    [Fact]
+    public async Task Concurrent_double_reverse_converges_to_single_409_and_single_restore()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"trainsaas-race-rev-{Guid.NewGuid():N}.db");
+        var dataSource = $"DataSource={dbPath}";
+        try
+        {
+            var adminA = StaffUser(1, StaffRole.Admin, "管理员甲");
+            var adminB = StaffUser(2, StaffRole.Admin, "管理员乙");
+            Student student;
+            SessionPack pack;
+            Consumption original;
+            using (var seed = CreateFileDb(dataSource, adminA))
+            {
+                seed.Database.EnsureCreated();
+                student = await SeedStudentAsync(seed, "并发学员", "13811113021");
+                var product = await SeedProductAsync(seed, "少儿课时包");
+                pack = await SeedPackAsync(seed, student.Id, product.Id, 921, 3);
+                original = await SeedConsumptionAsync(seed, student.Id, pack.Id, operatorId: 1);
+            }
+
+            using var winnerDb = CreateFileDb(dataSource, adminA);
+            var winner = new ConsumptionService(winnerDb, new DeductionService(winnerDb));
+
+            // 钩子挂输家：其冲正事务 BEGIN 之前（预检已完成、未持任何锁），
+            // 赢家已完整提交同一原行的镜像行。
+            Consumption? winnerMirror = null;
+            var interceptor = new WinnerRunsBeforeLoserTransaction(async () =>
+                winnerMirror = await winner.ReverseAsync(original.Id, "赢家撤销", adminA));
+            using var loserDb = CreateFileDb(dataSource, adminB, interceptor);
+            var loser = new ConsumptionService(loserDb, new DeductionService(loserDb));
+
+            // 输家收敛为 409（唯一索引 DbUpdateException 被捕获、回滚、复查），
+            // 而不是 500，更不是静默双回补。
+            var ex = await Assert.ThrowsAsync<ConflictException>(
+                () => loser.ReverseAsync(original.Id, "输家撤销", adminB));
+            Assert.Equal("该流水已撤销", ex.Message);
+            Assert.True(interceptor.HookFired, "竞态钩子未触发：测试没有走到交错窗口");
+            Assert.NotNull(winnerMirror);
+
+            // 镜像行恰一条（赢家的），余量恰好 +1 一次：3 → 4。
+            var mirrors = await loserDb.Consumptions.AsNoTracking()
+                .Where(c => c.ReversesConsumptionId == original.Id).ToListAsync();
+            var mirror = Assert.Single(mirrors);
+            Assert.Equal(winnerMirror!.Id, mirror.Id);
+            Assert.Equal("赢家撤销", mirror.Reason);
+            Assert.Equal(-1, mirror.Direction);
+            Assert.Equal(4, await RemainingAsync(loserDb, pack.Id));
+
+            // 原行 append-only：一字不动；账上恰两行。
+            var untouched = await loserDb.Consumptions.AsNoTracking()
+                .SingleAsync(c => c.Id == original.Id);
+            Assert.Equal(1, untouched.Direction);
+            Assert.Null(untouched.Reason);
+            Assert.Equal(2, await loserDb.Consumptions.AsNoTracking().CountAsync());
+        }
+        finally
+        {
+            TryDeleteDbFiles(dbPath);
+        }
     }
 }

@@ -9,8 +9,14 @@ namespace TrainSaas.Api.Services;
 
 /// <summary>
 /// 点名服务（Task 13，账务心脏）。POST /api/org/sessions/{id}/attendance 的
-/// 全部状态机；逐项处理、部分成功——单项失败（资格/无可用包）只影响该学员，
-/// 绝不中断同批其他学员，也绝不把单项业务失败升级成请求级异常。
+/// 全部状态机；逐项处理、部分成功——单项失败只影响该学员，不中断同批其他
+/// 学员。**部分成功的实际捕获范围**（I4 修正注释，此前言过其实）：逐项
+/// 捕获的只有两类业务失败——资格闸落空（"不在名单且无可用课时包"，
+/// Ok=false）与扣课的 <see cref="NoAvailablePackException"/>（"无可用课时
+/// 包"，Ok=false）；此外并发竞态经唯一索引收敛（upsert 冲突改插为改、
+/// 冲正冲突按已冲正续写，均不外溢）。其余异常（数据库故障等非预期错误）
+/// 仍会外溢成请求级 500 并中断整批——那是服务端 bug 的诚实信号，不属于
+/// 部分成功语义。
 ///
 /// 守卫顺序：课次（租户过滤器，未知/跨机构 404）→ 权限（Admin 或本课次
 /// 授课教师，否则 403）→ 名单（null/空 400；重复学员 400）。
@@ -29,7 +35,8 @@ namespace TrainSaas.Api.Services;
 /// <item>Present → Leave/Absent：找该 (student, session) 最新一条未被冲正的
 /// +1 流水，追加 Direction=-1 冲正行（Reason="点名修正"、
 /// ReversesConsumptionId=原行）并回补包余量 +1；原行 append-only 一字不动；
-/// 已全部冲正则只改标记。</item>
+/// 已全部冲正则只改标记。并发双修正撞 ReversesConsumptionId 唯一索引时按
+/// "已冲正"收敛（I4，见 ReverseLatestAsync），绝不 500、绝不双回补。</item>
 /// <item>无/Leave/Absent → Leave/Absent：只 upsert 点名行，不扣课。</item>
 /// </list>
 ///
@@ -83,7 +90,9 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
         var results = new List<MarkResult>(marks.Count);
         foreach (var item in marks)
         {
-            // 单项异常绝不外溢成请求级失败（部分成功语义）。
+            // 单项**业务**失败（资格落空 / 无可用课时包）在 MarkOneAsync 内
+            // 捕获为 Ok=false，不中断同批；非预期异常仍如实外溢（500），
+            // 部分成功的准确范围见类注释（I4 修正）。
             results.Add(await MarkOneAsync(session, productId, item, operatorId));
         }
 
@@ -281,6 +290,13 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
     /// 一字不动。无未冲正流水（从未扣过/已修正过）则什么都不做（幂等）。
     /// 包回补 +1 走 CAS 式 ExecuteUpdate，与冲正行同一显式事务提交
     /// （R12 点 3，见 <see cref="RestorePackSessionAsync"/>）。
+    ///
+    /// I4（最终审查）：并发双修正可让两个调用者选中同一条未冲正原行——
+    /// ReversesConsumptionId 唯一索引（R13）把输家的插入变成
+    /// DbUpdateException。与 <see cref="ConsumptionService.ReverseAsync"/>
+    /// 同款收敛：回滚（输家的包回补一并撤销，+1 恰一次）→ 丢弃冲突实体 →
+    /// 复查确系已冲正则视为完成（幂等）返回，点名修正**继续写标记**；不是
+    /// 则原样上抛。异常绝不外溢成 500 中断整批点名。
     /// </summary>
     private async Task ReverseLatestAsync(ClassSession session, int studentId, int operatorId)
     {
@@ -300,7 +316,7 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
         // 包回补与冲正行同一显式事务：要么都提交，要么都不提交。
         await using var tx = await db.Database.BeginTransactionAsync();
         await RestorePackSessionAsync(original.SessionPackId);
-        db.Consumptions.Add(new Consumption
+        var reversal = new Consumption
         {
             StudentId = studentId,
             SessionPackId = original.SessionPackId,
@@ -312,8 +328,33 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
             OperatorId = operatorId,
             CreatedAt = DateTime.Now,
             // InstitutionId 留 0：SaveChanges 按当前员工令牌自动填充。
-        });
-        await db.SaveChangesAsync();
+        };
+        db.Consumptions.Add(reversal);
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // I4 并发双修正：赢家先提交了指向同一原行的冲正行，唯一索引
+            // (ReversesConsumptionId) 把输家的插入变成 DbUpdateException。
+            // 回滚（包回补一并撤销）后复查：确系已冲正 → 视为完成（幂等），
+            // 调用方继续写标记；不是 → 原样上抛，绝不静默吞掉其它数据库失败。
+            await tx.RollbackAsync();
+            // 只摘除本次冲突的冲正行，**不做整表 ChangeTracker.Clear()**：
+            // 本方法也会经 ConvergeRacedPresentAsync 在 UpsertMarkAsync 内部
+            // 被调用，那时跟踪器里还挂着调用方稍后要覆写标记的点名行——
+            // 整表清理会把那次标记写入静默变成 no-op（丢写）。
+            db.Entry(reversal).State = EntityState.Detached;
+            if (await db.Consumptions.AsNoTracking()
+                    .AnyAsync(r => r.ReversesConsumptionId == original.Id))
+            {
+                return;
+            }
+
+            throw;
+        }
+
         await tx.CommitAsync();
     }
 
@@ -323,12 +364,16 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
     /// Direction=-1、Kind=Reversal、Reason="点名修正"、ReversesConsumptionId=
     /// 自己行 的新流水并回补包 +1，同一显式事务提交；原行 append-only
     /// 一字不动。恰一个竞态者自冲正（upsert 发现既有 Present 行的那一个）。
+    ///
+    /// I4：与 <see cref="ReverseLatestAsync"/> 同款唯一索引收敛——若指向
+    /// 自己行的冲正已被并发提交（例如管理端对同一流水的用户冲正），回滚后
+    /// 复查确系已冲正则视为完成返回（包只回补一次），不是则原样上抛。
     /// </summary>
     private async Task SelfReverseAsync(Consumption own, int operatorId)
     {
         await using var tx = await db.Database.BeginTransactionAsync();
         await RestorePackSessionAsync(own.SessionPackId);
-        db.Consumptions.Add(new Consumption
+        var reversal = new Consumption
         {
             StudentId = own.StudentId,
             SessionPackId = own.SessionPackId,
@@ -340,8 +385,28 @@ public class AttendanceService(AppDbContext db, IDeductionService deduction)
             OperatorId = operatorId,
             CreatedAt = DateTime.Now,
             // InstitutionId 留 0：SaveChanges 按当前员工令牌自动填充。
-        });
-        await db.SaveChangesAsync();
+        };
+        db.Consumptions.Add(reversal);
+        try
+        {
+            await db.SaveChangesAsync();
+        }
+        catch (DbUpdateException)
+        {
+            // I4 收敛（与 ReverseLatestAsync 同款）：回滚 → 摘除冲突实体
+            // （不整表 Clear，理由同前——调用方还持有跟踪中的点名行）→
+            // 复查确系已冲正 → 视为完成；不是 → 原样上抛。
+            await tx.RollbackAsync();
+            db.Entry(reversal).State = EntityState.Detached;
+            if (await db.Consumptions.AsNoTracking()
+                    .AnyAsync(r => r.ReversesConsumptionId == own.Id))
+            {
+                return;
+            }
+
+            throw;
+        }
+
         await tx.CommitAsync();
     }
 
