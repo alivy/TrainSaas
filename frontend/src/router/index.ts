@@ -6,6 +6,8 @@ import AdminLayout from '@/layouts/AdminLayout.vue'
 import PlatformLayout from '@/layouts/PlatformLayout.vue'
 import MobileLayout from '@/layouts/MobileLayout.vue'
 import PlatformLoginPage from '@/areas/platform/LoginPage.vue'
+import PlatformInstitutionsPage from '@/areas/platform/InstitutionsPage.vue'
+import PlatformChangePasswordPage from '@/areas/platform/ChangePasswordPage.vue'
 import AdminLoginPage from '@/areas/admin/LoginPage.vue'
 import ParentLoginPage from '@/areas/parent/LoginPage.vue'
 import { AREA_TOKEN_KEY, type ApiArea } from '@/api/http'
@@ -30,8 +32,8 @@ export const routes: RouteRecordRaw[] = [
   ] },
   { path: '/platform', component: PlatformLayout, meta: { area: 'platform' }, children: [
     { path: '', redirect: '/platform/institutions' },
-    { path: 'institutions', name: 'platform-institutions', component: Placeholder, meta: { title: '机构管理' } },
-    { path: 'change-password', name: 'platform-change-password', component: Placeholder, meta: { title: '修改密码' } }
+    { path: 'institutions', name: 'platform-institutions', component: PlatformInstitutionsPage, meta: { title: '机构管理' } },
+    { path: 'change-password', name: 'platform-change-password', component: PlatformChangePasswordPage, meta: { title: '修改密码' } }
   ] },
 
   // ===== 机构后台 =====
