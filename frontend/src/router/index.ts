@@ -10,6 +10,8 @@ import PlatformInstitutionsPage from '@/areas/platform/InstitutionsPage.vue'
 import PlatformChangePasswordPage from '@/areas/platform/ChangePasswordPage.vue'
 import AdminLoginPage from '@/areas/admin/LoginPage.vue'
 import AdminDashboardPage from '@/areas/admin/DashboardPage.vue'
+import AdminProductsPage from '@/areas/admin/ProductsPage.vue'
+import AdminStaffPage from '@/areas/admin/StaffPage.vue'
 import ParentLoginPage from '@/areas/parent/LoginPage.vue'
 import { AREA_TOKEN_KEY, type ApiArea } from '@/api/http'
 import type { Role } from '@/api/types'
@@ -44,8 +46,8 @@ export const routes: RouteRecordRaw[] = [
   { path: '/admin', component: AdminLayout, meta: { area: 'staff' }, children: [
     { path: '', redirect: '/admin/dashboard' },
     { path: 'dashboard', name: 'admin-dashboard', component: AdminDashboardPage, meta: { title: '工作台' } },
-    { path: 'products', name: 'admin-products', component: Placeholder, meta: { roles: ['Admin', 'Sales'], title: '产品管理' } },
-    { path: 'staff', name: 'admin-staff', component: Placeholder, meta: { roles: ['Admin'], title: '员工管理' } },
+    { path: 'products', name: 'admin-products', component: AdminProductsPage, meta: { roles: ['Admin', 'Sales'], title: '产品管理' } },
+    { path: 'staff', name: 'admin-staff', component: AdminStaffPage, meta: { roles: ['Admin'], title: '员工管理' } },
     { path: 'students', name: 'admin-students', component: Placeholder, meta: { title: '学员管理' } },
     { path: 'students/:id', name: 'admin-student-detail', component: Placeholder, meta: { title: '学员详情' } },
     { path: 'intents', name: 'admin-intents', component: Placeholder, meta: { roles: ['Admin', 'Sales', 'FrontDesk'], title: '线索管理' } },
