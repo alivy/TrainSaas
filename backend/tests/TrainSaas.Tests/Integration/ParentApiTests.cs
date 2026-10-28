@@ -629,22 +629,25 @@ public class ParentApiTests(ApiFactory factory) : IClassFixture<ApiFactory>
         var child = await SeedStudentAsync(org.Id, phone, "生成学员");
         var product = await SeedProductAsync(org.Id, "固定班课包", ProductType.Fixed, 24);
 
-        // 模板的每周时刻取"现在 + 3 小时"（跨午夜则自然落到次日），保证最近一次
-        // 实例明确落在未来，避开测试与服务端各读一次 DateTime.Now 的毫秒级边界。
+        // 模板用固定时刻 10:00-11:30（现实合法的模板：End>Start 永不跨午夜）；
+        // "最近实例在未来"由动态期望辅助函数保证（ExpectedWeeklyStarts 过滤
+        // startAt >= now），任何钟点运行都成立。此前用 now+3h 派生时刻，在
+        // 19:30-21:00 运行时 EndTime 跨午夜成为不可能模板，EndAt 断言必红
+        // （C1 修复只处理了行数口径，漏了跨午夜时刻口径）。
         var now = DateTime.Now;
         var next = now.AddHours(3);
         var template = await SeedTemplateAsync(org.Id, product.Id, teacher.Id, "501",
             dayOfWeek: next.DayOfWeek,
-            startTime: TimeOnly.FromDateTime(next),
-            endTime: TimeOnly.FromDateTime(next.AddMinutes(90)));
+            startTime: new TimeOnly(10, 0),
+            endTime: new TimeOnly(11, 30));
         await SeedEnrollmentAsync(org.Id, template.Id, child.Id);
         // 隔壁机构也有一张启用模板：若生成漏掉机构谓词，它会一起被物化。
         var neighbourTeacher = await SeedStaffAsync(neighbour.Id, "13912008002", StaffRole.Teacher);
         var neighbourProduct = await SeedProductAsync(neighbour.Id, "隔壁课包", ProductType.Fixed, 12);
         await SeedTemplateAsync(neighbour.Id, neighbourProduct.Id, neighbourTeacher.Id, "999",
             dayOfWeek: next.DayOfWeek,
-            startTime: TimeOnly.FromDateTime(next),
-            endTime: TimeOnly.FromDateTime(next.AddMinutes(90)));
+            startTime: new TimeOnly(10, 0),
+            endTime: new TimeOnly(11, 30));
 
         // 前提：全库一节实例都没有（惰性生成从未运行过）。
         Assert.Equal(0, await CountSessionsAsync());
