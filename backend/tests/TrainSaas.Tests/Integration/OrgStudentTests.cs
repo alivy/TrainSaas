@@ -366,8 +366,9 @@ public class OrgStudentTests(ApiFactory factory) : IClassFixture<ApiFactory>
 
         var packItem = body.GetProperty("packs").EnumerateArray().Single();
         Assert.Equal(
-            new[] { "productId", "productName", "remaining", "status", "total" },
+            new[] { "packId", "productId", "productName", "remaining", "status", "total" },
             packItem.EnumerateObject().Select(p => p.Name).OrderBy(n => n));
+        Assert.Equal(packId, packItem.GetProperty("packId").GetInt32());
         Assert.Equal(product.Id, packItem.GetProperty("productId").GetInt32());
         Assert.Equal("少儿英语课包", packItem.GetProperty("productName").GetString());
         Assert.Equal(20, packItem.GetProperty("total").GetInt32());

@@ -61,8 +61,9 @@ public record StudentDetail(
     List<StudentConsumptionItem> RecentConsumptions,
     List<StudentEnrollmentItem> Enrollments);
 
-/// <summary>学员课时包：{productId,productName,total,remaining,status}。</summary>
+/// <summary>学员课时包：{packId,productId,productName,total,remaining,status}。packId 供前台 walk-in 核销选包。</summary>
 public record StudentPackItem(
+    int PackId,
     int ProductId,
     string? ProductName,
     int Total,

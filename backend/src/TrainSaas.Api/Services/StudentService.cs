@@ -153,6 +153,7 @@ public class StudentService(AppDbContext db)
         return new StudentDetail(
             ToResponse(student),
             packs.Select(sp => new StudentPackItem(
+                sp.Id,
                 sp.ProductId,
                 productNames.GetValueOrDefault(sp.ProductId),
                 sp.TotalSessions,
