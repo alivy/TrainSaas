@@ -15,7 +15,8 @@ import { formatDateTime } from '@/utils/format'
 import type { StaffListItem, Role } from '@/api/types'
 
 const auth = useStaffAuth()
-const tableRef = ref<InstanceType<typeof PagedTable>>()
+// 泛型 SFC 不支持 InstanceType——用结构化类型对接 PagedTable 的 defineExpose
+const tableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
 const roleFilter = ref<Role | ''>('')
 
 const ROLE_OPTIONS: { value: Role; label: string }[] = [

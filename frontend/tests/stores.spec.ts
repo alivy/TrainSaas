@@ -30,9 +30,17 @@ describe('认证 stores', () => {
     vi.clearAllMocks()
   })
 
-  it('staffAuth.login 写入精确的 localStorage 键与 profile', async () => {
+  it('staffAuth.login 写入精确的 localStorage 键与 profile（staffId 来自 /me）', async () => {
     vi.mocked(orgApi.orgLogin).mockResolvedValue({
       token: 'tok-1',
+      name: '机构管理员',
+      role: 'Admin',
+      institutionId: 1,
+      institutionName: '演示机构',
+      institutionCode: 'demo'
+    })
+    vi.mocked(orgApi.orgMe).mockResolvedValue({
+      staffId: 42,
       name: '机构管理员',
       role: 'Admin',
       institutionId: 1,
@@ -43,8 +51,10 @@ describe('认证 stores', () => {
     await store.login('13900000001', '123456')
     expect(localStorage.getItem(TOKEN_KEYS.staff)).toBe('tok-1')
     expect(localStorage.getItem(TOKEN_KEYS.staffProfile)).toContain('"institutionCode":"demo"')
+    expect(localStorage.getItem(TOKEN_KEYS.staffProfile)).toContain('"staffId":42')
     expect(store.token).toBe('tok-1')
     expect(store.role).toBe('Admin')
+    expect(store.profile?.staffId).toBe(42)
     expect(store.is('Admin')).toBe(true)
     expect(store.is('Teacher')).toBe(false)
   })
@@ -52,6 +62,10 @@ describe('认证 stores', () => {
   it('staffAuth.logout 清空 token 与 profile', async () => {
     vi.mocked(orgApi.orgLogin).mockResolvedValue({
       token: 'tok-1', name: 'n', role: 'Sales', institutionId: 1,
+      institutionName: 'i', institutionCode: 'c'
+    })
+    vi.mocked(orgApi.orgMe).mockResolvedValue({
+      staffId: 7, name: 'n', role: 'Sales', institutionId: 1,
       institutionName: 'i', institutionCode: 'c'
     })
     const store = useStaffAuth()

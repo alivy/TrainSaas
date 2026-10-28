@@ -18,7 +18,8 @@ import type { ProductItem, ProductType } from '@/api/types'
 const auth = useStaffAuth()
 const isAdmin = computed(() => auth.role === 'Admin')
 
-const tableRef = ref<InstanceType<typeof PagedTable>>()
+// 泛型 SFC 不支持 InstanceType——用结构化类型对接 PagedTable 的 defineExpose
+const tableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
 const filters = reactive<{ type: ProductType | ''; published: string }>({ type: '', published: '' })
 
 function loader(page: number, pageSize: number) {
