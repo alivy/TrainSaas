@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
+import { ElMessage, type FormInstance, type FormRules, type UploadFile } from 'element-plus'
 import PagedTable from '@/components/PagedTable.vue'
 import EnumTag from '@/components/EnumTag.vue'
 import ImagePreview from '@/components/ImagePreview.vue'
@@ -76,6 +76,11 @@ async function onCoverChange(file: File) {
   const res = await orgUploadImage(file, 'cover')
   form.coverImagePath = res.path
   ElMessage.success('封面已上传，保存后生效')
+}
+
+// 模板表达式不允许 TS 类型标注——用 UploadFile 类型在 script 内适配
+function onCoverFileChange(file: UploadFile) {
+  if (file.raw) void onCoverChange(file.raw)
 }
 
 async function submit() {
@@ -202,7 +207,7 @@ async function togglePublish(row: ProductItem) {
               :show-file-list="false"
               accept="image/jpeg,image/png,image/webp"
               :auto-upload="false"
-              :on-change="(f: { raw: File }) => onCoverChange(f.raw)"
+              :on-change="onCoverFileChange"
             >
               <el-button>上传封面</el-button>
             </el-upload>
