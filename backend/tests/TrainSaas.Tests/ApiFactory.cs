@@ -62,6 +62,13 @@ public class ApiFactory : WebApplicationFactory<Program>
                 ["Storage:UploadRoot"] = _tempDir,
                 ["Jwt:Key"] = TestJwtKey,
                 ["SeedDemoData"] = "false",
+                // The "login" rate-limit partition keys on the remote IP, and
+                // every test client shares the loopback address: shared-fixture
+                // classes log in far more than the production 10/minute. Raise
+                // the permit for test hosts; LoginRateLimitTests passes its own
+                // override (=10) on a dedicated factory to pin the real 429
+                // behavior (test-provided overrides below win over defaults).
+                ["RateLimit:LoginPermitLimit"] = "100000",
             });
             // Test-provided overrides win over the defaults above.
             config.AddInMemoryCollection(_configOverrides);

@@ -83,9 +83,17 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
     .AllowAnyHeader()
     .AllowAnyMethod()));
 
-// Fixed-window "intent" rate-limit policy (5 requests/minute, partitioned per
-// IP, 429 on excess). Attached to the anonymous purchase-intent submission
-// route by PublicOrgsController ([EnableRateLimiting("intent")]).
+// Fixed-window rate-limit policies (429 on excess, partitioned per remote IP):
+// - "intent" (5/minute): the anonymous purchase-intent submission route
+//   ([EnableRateLimiting("intent")] on PublicOrgsController).
+// - "login" (I6, final review): the three anonymous login routes
+//   (platform/org/parent, [EnableRateLimiting("login")]) — the network-wide
+//   initial password 123456 must not be brute-forceable. PermitLimit is read
+//   lazily inside the partition factory (Task 3 lesson: test-overridable
+//   config must not be frozen at the top level); production default is 10
+//   requests/minute/IP. Shared-fixture integration hosts raise it via
+//   RateLimit:LoginPermitLimit (their login counts far exceed 10/minute);
+//   the dedicated LoginRateLimitTests pin the real 429 behavior at 10.
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -95,6 +103,14 @@ builder.Services.AddRateLimiter(options =>
             _ => new FixedWindowRateLimiterOptions
             {
                 PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+            }));
+    options.AddPolicy("login", context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = builder.Configuration.GetValue("RateLimit:LoginPermitLimit", 10),
                 Window = TimeSpan.FromMinutes(1),
             }));
 });

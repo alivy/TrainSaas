@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
@@ -15,8 +16,12 @@ namespace TrainSaas.Api.Controllers;
 public class PlatformAuthController(AppDbContext db, IPasswordHasherService hasher, TokenService tokens)
     : ControllerBase
 {
-    /// <summary>POST /api/platform/auth/login {username,password} → {token,name}。登录失败统一 401。</summary>
+    /// <summary>
+    /// POST /api/platform/auth/login {username,password} → {token,name}。登录失败统一 401。
+    /// I6：挂 "login" 固定窗口限流（默认 10 次/分钟/源 IP，超限 429）。
+    /// </summary>
     [HttpPost("login")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult<PlatformLoginResponse>> Login(PlatformLoginRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Username) || string.IsNullOrWhiteSpace(request.Password))

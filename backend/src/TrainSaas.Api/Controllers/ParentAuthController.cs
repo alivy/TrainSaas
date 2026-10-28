@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
@@ -20,8 +21,10 @@ public class ParentAuthController(
     /// <summary>
     /// POST /api/parent/auth/login {phone,password} → {token,phone}。
     /// 手机号无账号与密码错误返回同一个 401 —— 不泄露账号存在性。
+    /// I6：挂 "login" 固定窗口限流（默认 10 次/分钟/源 IP，超限 429）。
     /// </summary>
     [HttpPost("auth/login")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult<ParentLoginResponse>> Login(ParentLoginRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Phone) || string.IsNullOrWhiteSpace(request.Password))

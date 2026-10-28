@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using TrainSaas.Api.Auth;
 using TrainSaas.Api.Data;
@@ -22,8 +23,10 @@ public class OrgAuthController(
     /// POST /api/org/auth/login {phone,password} →
     /// {token,name,role,institutionId,institutionName,institutionCode}。
     /// 登录失败统一 401；员工 IsActive=false → 403；所属机构 Disabled → 403（"机构已停用"）。
+    /// I6：挂 "login" 固定窗口限流（默认 10 次/分钟/源 IP，超限 429）。
     /// </summary>
     [HttpPost("login")]
+    [EnableRateLimiting("login")]
     public async Task<ActionResult<StaffLoginResponse>> Login(StaffLoginRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Phone) || string.IsNullOrWhiteSpace(request.Password))

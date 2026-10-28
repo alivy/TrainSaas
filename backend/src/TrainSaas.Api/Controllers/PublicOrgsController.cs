@@ -30,10 +30,12 @@ public class PublicOrgsController(IntentService intentService) : ControllerBase
     /// <summary>
     /// POST /api/public/orgs/{code}/intents {name?,phone,productId?,message?} →
     /// 201 {id}。phone 必填且 <c>^1\d{10}$</c>；productId（若提供）必须是本机构
-    /// 已发布产品；message ≤200，非法一律 400。同 IP 每分钟限 5 次，超限 429。
+    /// 已发布产品；message ≤200，非法一律 400。同 IP 每分钟限 5 次，超限 429；
+    /// 匿名端点另设 64KB 请求体上限（I6 硬化：小 JSON 契约，防大包白耗）。
     /// </summary>
     [HttpPost("{code}/intents")]
     [EnableRateLimiting("intent")]
+    [RequestSizeLimit(65536)]
     public async Task<ActionResult<IntentCreatedResponse>> CreateIntent(
         string code, CreateIntentRequest request)
     {
