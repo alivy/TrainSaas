@@ -77,3 +77,16 @@ cd backend && dotnet test
 | `Storage:UploadRoot` | 图片上传根目录（logo/cover/voucher），运行时惰性读取 | `uploads` |
 | `Cors:Origins` | 允许跨域的前端源（数组） | `["http://localhost:5173"]` |
 | `SeedDemoData` | 启动时是否写入演示数据（幂等） | `false`（Development 覆盖为 `true`） |
+
+## 生产首次部署
+
+生产环境没有"预置平台账号"这回事（`SeedDemoData=false` 时启动只建库不种数据），首次引导按以下顺序完成：
+
+1. **一次性引导**：以 `SeedDemoData=true` 启动一次（如 `dotnet run --project backend/src/TrainSaas.Api` 后随环境变量 `SeedDemoData=true`，或在 appsettings 中临时开启）。这会建好库表并写入平台超管 `admin`（密码 `123456`）与一个演示机构；
+2. **立刻改掉平台超管密码**：`POST /api/platform/auth/login`（`admin` / `123456`）取得令牌后马上调 `POST /api/platform/auth/change-password`（`{oldPassword, newPassword}`，新密码 ≥6 位）——初始密码全网已知，这一步没有"稍后再说"；
+3. **停用演示机构**：用平台令牌调 `POST /api/platform/institutions/{id}/disable` 把演示机构停用（其员工账号密码同样是初始 `123456`，仅作展示数据，不应留在可用状态；机构的学员/课表数据保留与否不影响租户隔离）；
+4. **关闭种子开关**：把 `SeedDemoData` 设回 `false`（生产默认值即 false，Development 环境模板才会覆盖为 true）重启，之后启动只执行迁移，不再写任何数据。
+
+后续新建机构走平台端 `POST /api/platform/institutions`（管理员初始密码同为 `123456`，机构管理员应同样第一时间改密）。登录接口已挂每 IP 每分钟 10 次的固定窗口限流（超限 429），但限流只是兜底，弱初始密码必须靠上述流程消除。
+
+**反向代理 / ForwardedHeaders：V1 范围外。** 当前按直连 HTTP 部署（或由外部网关终结 TLS 后直转）。限流与匿名意向按 `RemoteIpAddress` 分区——若未来置于反代之后，需配置 `ForwardedHeaders` 把真实客户端 IP 透传，否则所有请求会共享代理 IP 的限流配额；此项连同 HTTPS/TLS 终结留待后续版本。

@@ -7,6 +7,9 @@ public record PlatformLoginRequest(string Username, string Password);
 /// <summary>POST /api/platform/auth/login → {token,name}。</summary>
 public record PlatformLoginResponse(string Token, string Name);
 
+/// <summary>POST /api/platform/auth/change-password。新密码 ≥6 位。</summary>
+public record PlatformChangePasswordRequest(string OldPassword, string NewPassword);
+
 public record StaffLoginRequest(string Phone, string Password);
 
 /// <summary>POST /api/org/auth/login → {token,name,role,institutionId,institutionName,institutionCode}。</summary>

@@ -312,6 +312,97 @@ public class AuthTests(ApiFactory factory) : IClassFixture<ApiFactory>
     }
 
     /// <summary>
+    /// I5：平台超管自助改密——生产首次部署的必经动作（初始密码 123456 改掉）。
+    /// 成功 204，旧密码立即失效（401），新密码可登录。
+    /// </summary>
+    [Fact]
+    public async Task Platform_change_password_then_old_password_fails()
+    {
+        await SeedPlatformUserAsync("chgroot1");
+        var client = factory.CreateClient();
+
+        var login = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot1", password = DefaultPassword.Initial });
+        var token = (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString()!;
+
+        var authed = AuthedClient(token);
+        var change = await authed.PostAsJsonAsync("/api/platform/auth/change-password",
+            new { oldPassword = DefaultPassword.Initial, newPassword = "newpass123" });
+        Assert.Equal(HttpStatusCode.NoContent, change.StatusCode);
+
+        var oldLogin = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot1", password = DefaultPassword.Initial });
+        Assert.Equal(HttpStatusCode.Unauthorized, oldLogin.StatusCode);
+
+        var newLogin = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot1", password = "newpass123" });
+        Assert.Equal(HttpStatusCode.OK, newLogin.StatusCode);
+    }
+
+    /// <summary>I5：旧密码错误 → 401（ProblemDetails "旧密码错误"），密码未被改动。</summary>
+    [Fact]
+    public async Task Platform_change_password_with_wrong_old_password_returns_401()
+    {
+        await SeedPlatformUserAsync("chgroot2");
+        var client = factory.CreateClient();
+
+        var login = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot2", password = DefaultPassword.Initial });
+        var token = (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString()!;
+
+        var authed = AuthedClient(token);
+        var change = await authed.PostAsJsonAsync("/api/platform/auth/change-password",
+            new { oldPassword = "totally-wrong", newPassword = "newpass123" });
+        Assert.Equal(HttpStatusCode.Unauthorized, change.StatusCode);
+        var problem = await change.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("旧密码错误", problem.GetProperty("detail").GetString());
+
+        // 密码未变：初始密码仍可登录。
+        var relogin = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot2", password = DefaultPassword.Initial });
+        Assert.Equal(HttpStatusCode.OK, relogin.StatusCode);
+    }
+
+    /// <summary>I5：新密码 &lt;6 位 → 400，密码未被改动。</summary>
+    [Fact]
+    public async Task Platform_change_password_with_short_new_password_returns_400()
+    {
+        await SeedPlatformUserAsync("chgroot3");
+        var client = factory.CreateClient();
+
+        var login = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot3", password = DefaultPassword.Initial });
+        var token = (await login.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("token").GetString()!;
+
+        var authed = AuthedClient(token);
+        var change = await authed.PostAsJsonAsync("/api/platform/auth/change-password",
+            new { oldPassword = DefaultPassword.Initial, newPassword = "12345" });
+        Assert.Equal(HttpStatusCode.BadRequest, change.StatusCode);
+        var problem = await change.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Contains("6", problem.GetProperty("detail").GetString());
+
+        var relogin = await client.PostAsJsonAsync("/api/platform/auth/login",
+            new { username = "chgroot3", password = DefaultPassword.Initial });
+        Assert.Equal(HttpStatusCode.OK, relogin.StatusCode);
+    }
+
+    /// <summary>I5：改密端点只对平台令牌开放——匿名 401、员工 403。</summary>
+    [Fact]
+    public async Task Platform_change_password_requires_platform_token()
+    {
+        var anonymous = await factory.CreateClient().PostAsJsonAsync("/api/platform/auth/change-password",
+            new { oldPassword = "x", newPassword = "y" });
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        await SeedStaffAsync("auth7", "13911100007", StaffRole.Admin);
+        var staffLogin = await LoginStaffAsync(factory.CreateClient(), "13911100007", DefaultPassword.Initial);
+        var staffClient = AuthedClient(staffLogin.GetProperty("token").GetString()!);
+        var forbidden = await staffClient.PostAsJsonAsync("/api/platform/auth/change-password",
+            new { oldPassword = "x", newPassword = "y" });
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+    }
+
+    /// <summary>
     /// Reaching 200 here requires the literal claim names to survive the JWT
     /// bearer pipeline untouched: the StaffOnly policy matches user_type=staff,
     /// and the endpoint resolves staff_id/institution_id claims. If inbound
