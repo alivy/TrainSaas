@@ -108,4 +108,20 @@ describe('认证 stores', () => {
     store.logout()
     expect(localStorage.getItem(TOKEN_KEYS.parent)).toBeNull()
   })
+
+  it('parentAuth.selectedChildId 切换持久化到 sessionStorage，logout 清除', () => {
+    const store = useParentAuth()
+    store.selectChild(7)
+    expect(sessionStorage.getItem('ts_parent_child')).toBe('7')
+    expect(store.selectedChildId).toBe(7)
+    store.logout()
+    expect(sessionStorage.getItem('ts_parent_child')).toBeNull()
+    expect(store.selectedChildId).toBeNull()
+  })
+
+  it('parentAuth 从 sessionStorage 恢复选中孩子（刷新场景）', () => {
+    sessionStorage.setItem('ts_parent_child', '9')
+    const store = useParentAuth()
+    expect(store.selectedChildId).toBe(9)
+  })
 })

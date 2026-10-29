@@ -1,5 +1,4 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
-import Placeholder from '@/areas/Placeholder.vue'
 import ForbiddenPage from '@/components/ForbiddenPage.vue'
 import BlankLayout from '@/layouts/BlankLayout.vue'
 import AdminLayout from '@/layouts/AdminLayout.vue'
@@ -25,6 +24,11 @@ import AdminReportsPage from '@/areas/admin/ReportsPage.vue'
 import AdminProfilePage from '@/areas/admin/ProfilePage.vue'
 import ParentLoginPage from '@/areas/parent/LoginPage.vue'
 import PublicOrgPage from '@/areas/org/PublicOrgPage.vue'
+import ParentChildrenPage from '@/areas/parent/ChildrenPage.vue'
+import ParentPacksPage from '@/areas/parent/PacksPage.vue'
+import ParentRecordsPage from '@/areas/parent/RecordsPage.vue'
+import ParentSchedulePage from '@/areas/parent/SchedulePage.vue'
+import ParentMePage from '@/areas/parent/MePage.vue'
 import { AREA_TOKEN_KEY, type ApiArea } from '@/api/http'
 import type { Role } from '@/api/types'
 import { useStaffAuth } from '@/stores/staffAuth'
@@ -82,11 +86,11 @@ export const routes: RouteRecordRaw[] = [
   ] },
   { path: '/parent', component: MobileLayout, meta: { area: 'parent' }, children: [
     { path: '', redirect: '/parent/children' },
-    { path: 'children', name: 'parent-children', component: Placeholder, meta: { title: '我的孩子' } },
-    { path: 'packs', name: 'parent-packs', component: Placeholder, meta: { title: '课时包' } },
-    { path: 'records', name: 'parent-records', component: Placeholder, meta: { title: '课时记录' } },
-    { path: 'schedule', name: 'parent-schedule', component: Placeholder, meta: { title: '课表' } },
-    { path: 'me', name: 'parent-me', component: Placeholder, meta: { title: '我的' } }
+    { path: 'children', name: 'parent-children', component: ParentChildrenPage, meta: { title: '我的孩子' } },
+    { path: 'packs', name: 'parent-packs', component: ParentPacksPage, meta: { title: '课时包' } },
+    { path: 'records', name: 'parent-records', component: ParentRecordsPage, meta: { title: '课时记录' } },
+    { path: 'schedule', name: 'parent-schedule', component: ParentSchedulePage, meta: { title: '课表' } },
+    { path: 'me', name: 'parent-me', component: ParentMePage, meta: { title: '我的' } }
   ] }
 ]
 
