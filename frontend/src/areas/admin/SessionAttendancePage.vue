@@ -73,18 +73,20 @@ async function submit() {
     ElMessage.warning('请先标记至少一名学员')
     return
   }
+  const prevRows = [...marks.rows.value] // I1：失败项恢复需要名单外行的信息
   submitting.value = true
   try {
     const res = await orgMarkAttendance(detail.value.id, payload)
-    marks.applyResults(res.results)
+    submitted.value = true
+    await load() // 刷新回显与状态（init 会重置错误）
+    // I1：load() 之后再恢复失败项——保留用户所选标记、错误文案与名单外行
+    marks.restoreFailed(payload, res.results, prevRows)
     const failed = res.results.filter((r) => !r.ok)
     if (failed.length === 0) {
       ElMessage.success('点名已提交，课时已扣减')
     } else {
       ElMessage.warning(`${failed.length} 名学员处理失败，详见列表红字`)
     }
-    submitted.value = true
-    await load() // 刷新回显与状态
   } catch {
     // toast 已由拦截器处理
   } finally {

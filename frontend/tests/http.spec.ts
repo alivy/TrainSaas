@@ -13,11 +13,11 @@ import {
   clearUnauthorizedHandlers
 } from '@/api/http'
 
-function axiosError(status: number, data: unknown) {
+function axiosError(status: number, data: unknown, url?: string) {
   return {
     isAxiosError: true,
     response: { status, data },
-    config: { headers: {} }
+    config: { headers: {}, url }
   } as never
 }
 
@@ -66,10 +66,32 @@ describe('http 层：错误响应处理', () => {
     registerUnauthorizedHandler('staff', staffHandler)
     registerUnauthorizedHandler('parent', parentHandler)
     const onError = makeResponseErrorInterceptor('staff')
-    await expect(onError(axiosError(401, { title: 'unauthorized' }))).rejects.toBeTruthy()
+    await expect(onError(axiosError(401, { title: 'unauthorized' }, '/api/org/orders'))).rejects.toBeTruthy()
     expect(staffHandler).toHaveBeenCalledOnce()
     expect(parentHandler).not.toHaveBeenCalled()
     expect(ElMessage.error).toHaveBeenCalledWith('登录已过期，请重新登录')
+  })
+
+  it('登录端点的 401（密码错误）→ toast 后端 detail，不触发登出处理器', async () => {
+    const staffHandler = vi.fn()
+    registerUnauthorizedHandler('staff', staffHandler)
+    const onError = makeResponseErrorInterceptor('staff')
+    await expect(
+      onError(axiosError(401, { detail: '手机号或密码错误' }, '/api/org/auth/login'))
+    ).rejects.toBeTruthy()
+    expect(ElMessage.error).toHaveBeenCalledWith('手机号或密码错误')
+    expect(staffHandler).not.toHaveBeenCalled()
+  })
+
+  it('改密端点的 401（旧密码错误）→ toast detail，绝不强制登出', async () => {
+    const parentHandler = vi.fn()
+    registerUnauthorizedHandler('parent', parentHandler)
+    const onError = makeResponseErrorInterceptor('parent')
+    await expect(
+      onError(axiosError(401, { detail: '旧密码错误' }, '/api/parent/change-password'))
+    ).rejects.toBeTruthy()
+    expect(ElMessage.error).toHaveBeenCalledWith('旧密码错误')
+    expect(parentHandler).not.toHaveBeenCalled()
   })
 
   it('429 → 专用限流文案', async () => {

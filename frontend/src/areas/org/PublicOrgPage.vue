@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { publicOrgPage, publicSubmitIntent } from '@/api/public'
 import { formatMoney } from '@/utils/format'
@@ -37,6 +37,10 @@ const intent = reactive({
   cooldown: 0 // 429 冷却秒数（Review Focus 5）
 })
 let cooldownTimer: ReturnType<typeof setInterval> | null = null
+
+onUnmounted(() => {
+  if (cooldownTimer) clearInterval(cooldownTimer) // M1：卸载清理定时器
+})
 
 function openIntent(product: PublicOrgProductItem | null) {
   intent.product = product

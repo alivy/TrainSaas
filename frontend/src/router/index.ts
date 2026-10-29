@@ -69,7 +69,7 @@ export const routes: RouteRecordRaw[] = [
     { path: 'intents', name: 'admin-intents', component: AdminIntentsPage, meta: { roles: ['Admin', 'Sales', 'FrontDesk'], title: '线索管理' } },
     { path: 'orders', name: 'admin-orders', component: AdminOrdersPage, meta: { roles: ['Admin', 'Sales', 'FrontDesk'], title: '订单管理' } },
     { path: 'orders/:id', name: 'admin-order-detail', component: AdminOrderDetailPage, meta: { roles: ['Admin', 'Sales', 'FrontDesk'], title: '订单详情' } },
-    { path: 'templates', name: 'admin-templates', component: AdminTemplatesPage, meta: { title: '班级管理' } },
+    { path: 'templates', name: 'admin-templates', component: AdminTemplatesPage, meta: { roles: ['Admin'], title: '班级管理' } },
     { path: 'schedule', name: 'admin-schedule', component: AdminWeekSchedulePage, meta: { title: '周课表' } },
     { path: 'sessions/:id', name: 'admin-session-attendance', component: AdminSessionAttendancePage, meta: { title: '课程点名' } },
     { path: 'consumptions', name: 'admin-consumptions', component: AdminConsumptionsPage, meta: { title: '核销记录' } },

@@ -20,10 +20,15 @@ const router = useRouter()
 const role = computed(() => auth.role)
 
 const tableRef = ref<{ reload: (resetPage?: boolean) => void } | null>(null)
-const filters = reactive<{ status: OrderStatus | '' }>({ status: '' })
+const filters = reactive<{ status: OrderStatus | ''; studentId: number | null }>({ status: '', studentId: null })
 
 function loader(page: number, pageSize: number) {
-  return orgOrdersList({ status: filters.status || undefined, page, pageSize })
+  return orgOrdersList({
+    status: filters.status || undefined,
+    studentId: filters.studentId ?? undefined,
+    page,
+    pageSize
+  })
 }
 
 // ===== 新建订单 =====
@@ -115,6 +120,20 @@ async function submit() {
         <el-option label="已生效" value="Active" />
         <el-option label="已取消" value="Cancelled" />
         <el-option label="已作废" value="Voided" />
+      </el-select>
+      <el-select
+        v-model="filters.studentId"
+        filterable
+        remote
+        clearable
+        reserve-keyword
+        placeholder="按学员筛选（搜索）"
+        :remote-method="searchStudents"
+        :loading="studentLoading"
+        style="width: 220px"
+        @change="tableRef?.reload()"
+      >
+        <el-option v-for="s in studentOptions" :key="s.id" :label="`${s.name}（${s.phone}）`" :value="s.id" />
       </el-select>
       <el-button type="primary" @click="openCreate">新建订单</el-button>
     </div>

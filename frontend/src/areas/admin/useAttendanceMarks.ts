@@ -65,5 +65,33 @@ export function useAttendanceMarks() {
     errors.value = next
   }
 
-  return { rows, marks, serverMarks, errors, init, setMark, addAdhoc, dirtyIds, isDirty, buildPayload, applyResults }
+  /**
+   * 提交后 load() 会以服务器态重置本状态机（I1 修复）：
+   * 用提交前的 payload 恢复失败项的用户所选标记（服务器未写入，本地保留便于修正后重交），
+   * 重新记录失败原因，并把失败的名单外学员行加回列表（previousRows 提供其姓名/手机号）。
+   */
+  function restoreFailed(payload: MarkItemWire[], results: MarkResult[], previousRows?: AttendanceRow[]) {
+    const failed = results.filter((r) => !r.ok)
+    if (failed.length === 0) return
+    const nextMarks = { ...marks.value }
+    const nextErrors = { ...errors.value }
+    for (const f of failed) {
+      const chosen = payload.find((p) => p.studentId === f.studentId)
+      if (!previousRows?.some((r) => r.studentId === f.studentId) && !rows.value.some((r) => r.studentId === f.studentId)) {
+        // 名单外且行已丢失、又没给 previousRows —— 无法恢复行，仅记录错误
+        if (f.error) nextErrors[f.studentId] = f.error
+        continue
+      }
+      if (!rows.value.some((r) => r.studentId === f.studentId)) {
+        const prev = previousRows!.find((r) => r.studentId === f.studentId)!
+        rows.value = [...rows.value, prev]
+      }
+      if (chosen) nextMarks[f.studentId] = chosen.mark
+      if (f.error) nextErrors[f.studentId] = f.error
+    }
+    marks.value = nextMarks
+    errors.value = nextErrors
+  }
+
+  return { rows, marks, serverMarks, errors, init, setMark, addAdhoc, dirtyIds, isDirty, buildPayload, applyResults, restoreFailed }
 }

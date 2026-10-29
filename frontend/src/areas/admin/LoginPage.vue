@@ -68,7 +68,7 @@ async function submit() {
 
 <style scoped>
 .login-card {
-  width: 380px;
+  width: min(380px, 100%); /* M5：375px 视口不溢出 */
 }
 .login-title {
   text-align: center;

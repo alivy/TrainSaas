@@ -49,11 +49,15 @@ export function makeResponseErrorInterceptor(area: ApiArea) {
     const ax = error as {
       isAxiosError?: boolean
       response?: { status: number; data?: { title?: string; detail?: string } }
+      config?: { url?: string }
     }
     const response = ax?.response
     if (response) {
       const data = response.data ?? {}
-      if (response.status === 401) {
+      // 登录/改密端点的 401 是"凭据错误"业务语义：toast 后端 detail，绝不触发登出跳转（I2）
+      const url = ax?.config?.url ?? ''
+      const isCredentialCall = /\/auth\/login$|\/change-password$/.test(url)
+      if (response.status === 401 && !isCredentialCall) {
         ElMessage.error('登录已过期，请重新登录')
         unauthorizedHandlers.get(area)?.()
       } else if (response.status === 429) {

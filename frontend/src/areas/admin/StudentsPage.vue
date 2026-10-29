@@ -181,7 +181,7 @@ async function resetParentPassword(row: StudentItem) {
         <template #default="{ row }">
           <el-button link type="primary" @click="router.push(`/admin/students/${row.id}`)">详情</el-button>
           <el-button v-if="role !== 'Teacher'" link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button link type="warning" @click="resetParentPassword(row)">重置家长密码</el-button>
+          <el-button v-if="role !== 'Teacher'" link type="warning" @click="resetParentPassword(row)">重置家长密码</el-button>
         </template>
       </el-table-column>
     </PagedTable>

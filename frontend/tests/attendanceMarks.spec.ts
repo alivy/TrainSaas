@@ -72,4 +72,40 @@ describe('useAttendanceMarks（点名状态机）', () => {
     m.applyResults([{ studentId: 2, ok: true, error: null }])
     expect(m.errors.value[2]).toBeUndefined()
   })
+
+  it('restoreFailed：提交刷新后，失败项恢复用户所选标记并保留错误（I1）', () => {
+    const m = useAttendanceMarks()
+    m.init(ROSTER, [])
+    m.setMark(1, 'Present')
+    m.setMark(2, 'Present')
+    const payload = m.buildPayload()
+    // 模拟提交后 load()：服务器只写入了成功项（1），init 重置一切
+    m.init(ROSTER, [{ studentId: 1, mark: 'Present' }])
+    m.restoreFailed(payload, [
+      { studentId: 1, ok: true, error: null },
+      { studentId: 2, ok: false, error: '无可用课时包' }
+    ])
+    expect(m.marks.value[2]).toBe('Present') // 用户选择保留，便于修正后重交
+    expect(m.marks.value[1]).toBe('Present') // 成功项以服务器回显为准
+    expect(m.errors.value[2]).toBe('无可用课时包')
+    expect(m.dirtyIds.value).toEqual([2])
+  })
+
+  it('restoreFailed：失败的名单外学员重新加回列表（I1）', () => {
+    const m = useAttendanceMarks()
+    m.init(ROSTER, [])
+    m.addAdhoc({ studentId: 9, name: '插班生', phone: '13800009999' })
+    m.setMark(9, 'Present')
+    const payload = m.buildPayload()
+    const prevRows = [...m.rows.value]
+    m.init(ROSTER, []) // 刷新后名单外行丢失
+    m.restoreFailed(
+      payload,
+      [{ studentId: 9, ok: false, error: '不在名单且无可用课时包' }],
+      prevRows
+    )
+    expect(m.rows.value.some((r) => r.studentId === 9 && r.adhoc)).toBe(true)
+    expect(m.errors.value[9]).toBe('不在名单且无可用课时包')
+    expect(m.marks.value[9]).toBe('Present')
+  })
 })

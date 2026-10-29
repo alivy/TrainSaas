@@ -8,16 +8,23 @@ const props = defineProps<{ url: string; size?: number }>()
 const auth = useStaffAuth()
 const objectUrl = ref('')
 const failed = ref(false)
+let disposed = false // M2：卸载竞态防护——fetch 晚于卸载返回时立即释放
 
 onMounted(async () => {
   try {
-    objectUrl.value = await fetchAuthedImage(props.url, auth.token ?? '')
+    const url = await fetchAuthedImage(props.url, auth.token ?? '')
+    if (disposed) {
+      revokeImage(url)
+    } else {
+      objectUrl.value = url
+    }
   } catch {
     failed.value = true
   }
 })
 
 onUnmounted(() => {
+  disposed = true
   if (objectUrl.value) revokeImage(objectUrl.value)
 })
 </script>
