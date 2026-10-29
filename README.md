@@ -90,3 +90,15 @@ cd backend && dotnet test
 后续新建机构走平台端 `POST /api/platform/institutions`（管理员初始密码同为 `123456`，机构管理员应同样第一时间改密）。登录接口已挂每 IP 每分钟 10 次的固定窗口限流（超限 429），但限流只是兜底，弱初始密码必须靠上述流程消除。
 
 **反向代理 / ForwardedHeaders：V1 范围外。** 当前按直连 HTTP 部署（或由外部网关终结 TLS 后直转）。限流与匿名意向按 `RemoteIpAddress` 分区——若未来置于反代之后，需配置 `ForwardedHeaders` 把真实客户端 IP 透传，否则所有请求会共享代理 IP 的限流配额；此项连同 HTTPS/TLS 终结留待后续版本。
+
+## 前端（Vue 3 + Element Plus）
+
+前端为单应用四区域（平台超管 `/platform`、机构后台 `/admin`、公开介绍页 `/org/{code}`、家长端 `/parent`），代码与详细文档见 [`frontend/README.md`](frontend/README.md)。
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:5173（被占自动递增），/api 代理到 5080
+cd frontend && npm run build                # 生产构建 → frontend/dist（静态托管 + 反代 /api，nginx 示例见前端 README）
+cd frontend && npm run test                 # 逻辑层单测（vitest）
+```
+
+全链路手动验收清单：[`frontend/tests/e2e-checklist.md`](frontend/tests/e2e-checklist.md)。
