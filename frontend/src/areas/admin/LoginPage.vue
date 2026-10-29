@@ -20,9 +20,9 @@ const rules: FormRules = {
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
 }
 
-// Ruling F2：Teacher 暂落地 dashboard，T7 周课表页就绪后切换为 /admin/schedule
+// F2 落地：Teacher 直接进周课表（Task 7 已就绪），其余角色进工作台
 function defaultPath(): string {
-  return '/admin/dashboard'
+  return auth.role === 'Teacher' ? '/admin/schedule' : '/admin/dashboard'
 }
 
 async function submit() {
