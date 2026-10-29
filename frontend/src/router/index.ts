@@ -19,6 +19,8 @@ import AdminOrdersPage from '@/areas/admin/OrdersPage.vue'
 import AdminOrderDetailPage from '@/areas/admin/OrderDetailPage.vue'
 import AdminTemplatesPage from '@/areas/admin/TemplatesPage.vue'
 import AdminWeekSchedulePage from '@/areas/admin/WeekSchedulePage.vue'
+import AdminSessionAttendancePage from '@/areas/admin/SessionAttendancePage.vue'
+import AdminConsumptionsPage from '@/areas/admin/ConsumptionsPage.vue'
 import ParentLoginPage from '@/areas/parent/LoginPage.vue'
 import { AREA_TOKEN_KEY, type ApiArea } from '@/api/http'
 import type { Role } from '@/api/types'
@@ -62,8 +64,8 @@ export const routes: RouteRecordRaw[] = [
     { path: 'orders/:id', name: 'admin-order-detail', component: AdminOrderDetailPage, meta: { roles: ['Admin', 'Sales', 'FrontDesk'], title: '订单详情' } },
     { path: 'templates', name: 'admin-templates', component: AdminTemplatesPage, meta: { title: '班级管理' } },
     { path: 'schedule', name: 'admin-schedule', component: AdminWeekSchedulePage, meta: { title: '周课表' } },
-    { path: 'sessions/:id', name: 'admin-session-attendance', component: Placeholder, meta: { title: '课程点名' } },
-    { path: 'consumptions', name: 'admin-consumptions', component: Placeholder, meta: { title: '核销记录' } },
+    { path: 'sessions/:id', name: 'admin-session-attendance', component: AdminSessionAttendancePage, meta: { title: '课程点名' } },
+    { path: 'consumptions', name: 'admin-consumptions', component: AdminConsumptionsPage, meta: { title: '核销记录' } },
     { path: 'reports', name: 'admin-reports', component: Placeholder, meta: { roles: ['Admin', 'Sales', 'Teacher'], title: '业绩报表' } },
     { path: 'profile', name: 'admin-profile', component: Placeholder, meta: { roles: ['Admin'], title: '机构页设置' } }
   ] },
