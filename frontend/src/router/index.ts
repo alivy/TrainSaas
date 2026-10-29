@@ -21,6 +21,8 @@ import AdminTemplatesPage from '@/areas/admin/TemplatesPage.vue'
 import AdminWeekSchedulePage from '@/areas/admin/WeekSchedulePage.vue'
 import AdminSessionAttendancePage from '@/areas/admin/SessionAttendancePage.vue'
 import AdminConsumptionsPage from '@/areas/admin/ConsumptionsPage.vue'
+import AdminReportsPage from '@/areas/admin/ReportsPage.vue'
+import AdminProfilePage from '@/areas/admin/ProfilePage.vue'
 import ParentLoginPage from '@/areas/parent/LoginPage.vue'
 import { AREA_TOKEN_KEY, type ApiArea } from '@/api/http'
 import type { Role } from '@/api/types'
@@ -66,8 +68,8 @@ export const routes: RouteRecordRaw[] = [
     { path: 'schedule', name: 'admin-schedule', component: AdminWeekSchedulePage, meta: { title: '周课表' } },
     { path: 'sessions/:id', name: 'admin-session-attendance', component: AdminSessionAttendancePage, meta: { title: '课程点名' } },
     { path: 'consumptions', name: 'admin-consumptions', component: AdminConsumptionsPage, meta: { title: '核销记录' } },
-    { path: 'reports', name: 'admin-reports', component: Placeholder, meta: { roles: ['Admin', 'Sales', 'Teacher'], title: '业绩报表' } },
-    { path: 'profile', name: 'admin-profile', component: Placeholder, meta: { roles: ['Admin'], title: '机构页设置' } }
+    { path: 'reports', name: 'admin-reports', component: AdminReportsPage, meta: { roles: ['Admin', 'Sales', 'Teacher'], title: '业绩报表' } },
+    { path: 'profile', name: 'admin-profile', component: AdminProfilePage, meta: { roles: ['Admin'], title: '机构页设置' } }
   ] },
 
   // ===== 公开介绍页 =====
