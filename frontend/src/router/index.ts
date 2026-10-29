@@ -24,6 +24,7 @@ import AdminConsumptionsPage from '@/areas/admin/ConsumptionsPage.vue'
 import AdminReportsPage from '@/areas/admin/ReportsPage.vue'
 import AdminProfilePage from '@/areas/admin/ProfilePage.vue'
 import ParentLoginPage from '@/areas/parent/LoginPage.vue'
+import PublicOrgPage from '@/areas/org/PublicOrgPage.vue'
 import { AREA_TOKEN_KEY, type ApiArea } from '@/api/http'
 import type { Role } from '@/api/types'
 import { useStaffAuth } from '@/stores/staffAuth'
@@ -73,7 +74,7 @@ export const routes: RouteRecordRaw[] = [
   ] },
 
   // ===== 公开介绍页 =====
-  { path: '/org/:code', name: 'public-org', component: Placeholder, meta: { area: 'public', title: '机构介绍' } },
+  { path: '/org/:code', name: 'public-org', component: PublicOrgPage, meta: { area: 'public', title: '机构介绍' } },
 
   // ===== 家长端 =====
   { path: '/parent/login', component: BlankLayout, meta: { area: 'public' }, children: [
